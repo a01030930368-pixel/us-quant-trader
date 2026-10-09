@@ -165,7 +165,7 @@ h2 { font-size: 1.125rem; }
 .kpi { padding: 20px 20px 18px; display: grid; gap: 6px; align-content: start; border-left: 1px solid var(--line-soft); min-width: 0; }
 .kpi:first-child { border-left: 0; }
 .kpi .v { font-size: 1.5rem; font-weight: 500; line-height: 1.15; }
-.kpi .s { font-size: 0.75rem; color: var(--muted); }
+.kpi .s { font-size: 0.75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* Panels */
 .panel {
@@ -513,7 +513,7 @@ footer code { font-family: var(--font-data); color: var(--muted); }
     var upd = new Date(S.updated_at);
     var age = daysBetween(parseDate(S.updated_at), today());
     var label = isNaN(upd) ? esc(S.updated_at) : fmtDate(S.updated_at) + " " + fmtTime(S.updated_at) + " 기준";
-    meta.push('<span class="pill num">' + label + "</span>");
+    meta.push('<span class="pill">' + label + "</span>");
     if (META.source !== "sample" && age >= 4) meta.push('<span class="pill stale">' + age + "일째 갱신 없음</span>");
   }
   $("meta").innerHTML = meta.join("");
@@ -553,7 +553,7 @@ footer code { font-family: var(--font-data); color: var(--muted); }
   ];
   $("kpis").innerHTML = kpis.map(function (x) {
     return '<div class="kpi"><span class="eyebrow">' + esc(x.k) + '</span><span class="v num ' + x.c + '">' + x.v +
-      '</span><span class="s num">' + esc(x.s) + "</span></div>";
+      '</span><span class="s">' + esc(x.s) + "</span></div>";
   }).join("");
   $("legend-strat").textContent = strat.name || "전략";
   $("legend-bench").textContent = benchSym + " 단순 보유";
