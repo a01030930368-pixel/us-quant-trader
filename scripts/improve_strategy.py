@@ -185,6 +185,18 @@ def main():
     w.index.name = "월"
     out += ["## 7. 기준 전략의 최악 8개월에 개선안은?\n", fmt(w.reset_index()), ""]
 
+    # 8. Is the multi-window momentum gain robust to the choice of windows?
+    rows = []
+    for lbs in ([21, 63, 126, 252], [63, 126, 252], [21, 63, 126], [42, 126, 252],
+                [21, 126, 252], [63, 189], [21, 42, 63]):
+        for sh in (0.3, 0.5):
+            s = stats(*since(real({"lookbacks": lbs}, share=sh)))
+            rows.append({"기간 조합(거래일)": ",".join(map(str, lbs)), "공격 비중": f"{sh:.0%}", **s,
+                         "SPY 이김": "예" if s["연수익"] > spy["연수익"] and s["최대낙폭"] > spy["최대낙폭"]
+                         else "아니오"})
+    out += ["## 8. 여러 기간 모멘텀 평균: 기간 조합을 바꿔도 유지되나?\n",
+            fmt(pd.DataFrame(rows)), ""]
+
     Path("reports").mkdir(exist_ok=True)
     text = "\n".join(out)
     Path("reports/improve.md").write_text(text, encoding="utf-8")
