@@ -7,10 +7,9 @@
 
 준비:
   .env 파일에 KIWOOM_APP_KEY, KIWOOM_SECRET_KEY 입력 (모의투자용 키)
-  키움 API 가이드의 usa20100 페이지에서 'URL' 값(예: /api/....)을 복사
 
 실행:
-  python scripts/kiwoom_mock_check.py --path "/api/여기에/복사한/경로" --ticker AAPL
+  python scripts/kiwoom_mock_check.py --ticker AAPL --exchange ND
 """
 from __future__ import annotations
 
@@ -53,9 +52,12 @@ def get_token(appkey: str, secret: str) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--path", help="API 가이드의 usa20100 URL 경로 (예: /api/...)")
+    ap.add_argument("--path", default="/api/us/mrkcond",
+                    help="usa20100 URL 경로 (API 가이드 기준 /api/us/mrkcond)")
     ap.add_argument("--api-id", default="usa20100")
     ap.add_argument("--ticker", default="AAPL")
+    ap.add_argument("--exchange", default="ND",
+                    help="거래소 구분: ND=NASDAQ, NY=NYSE, NA=AMEX")
     ap.add_argument("--body", default=None,
                     help='요청 본문 JSON을 직접 지정 (가이드의 필드명이 다를 때). 예: \'{"stk_cd":"AAPL"}\'')
     args = ap.parse_args()
@@ -67,11 +69,7 @@ def main() -> None:
         sys.exit(1)
 
     token = get_token(appkey, secret)
-    if not args.path:
-        print("\n2단계를 하려면 --path 에 usa20100 의 URL 경로를 넣어 다시 실행하세요.")
-        return
-
-    body = json.loads(args.body) if args.body else {"stk_cd": args.ticker}
+    body = json.loads(args.body) if args.body else {"stex_tp": args.exchange, "stk_cd": args.ticker}
     r = requests.post(f"{MOCK}{args.path}",
                       headers={"Content-Type": "application/json;charset=UTF-8",
                                "authorization": f"Bearer {token}",
