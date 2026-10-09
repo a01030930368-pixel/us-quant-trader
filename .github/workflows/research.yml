@@ -1,0 +1,25 @@
+# Actions 탭 -> research -> Run workflow: 새 연구 방향 실험 리포트를 만듭니다.
+name: research
+on:
+  # Also runs automatically when the experiment or strategy code changes.
+  push:
+    paths:
+      - "scripts/research_strategy.py"
+      - "quant/strategies.py"
+      - ".github/workflows/research.yml"
+  workflow_dispatch:
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python scripts/research_strategy.py
+      - run: cat reports/research.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: research
+          path: reports/

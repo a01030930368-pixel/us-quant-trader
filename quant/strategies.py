@@ -17,20 +17,29 @@ def _month_ends(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(s.groupby(index.to_period("M")).last().values)
 
 
-def _period_ends(index: pd.DatetimeIndex, freq: str) -> pd.DatetimeIndex:
-    """Last session of each month ("M"), week ("W") or every session ("D")."""
+def _period_ends(index: pd.DatetimeIndex, freq: str, offset: int = 0) -> pd.DatetimeIndex:
+    """Last session of each month ("M"), week ("W") or every session ("D").
+
+    offset: for "M", use the session `offset` trading days after each month
+    end instead (e.g. 5 = about a week into the next month).
+    """
     if freq == "D":
         return index
     if freq == "M":
-        return _month_ends(index)
+        ends = _month_ends(index)
+        if offset:
+            pos = index.get_indexer(ends) + offset
+            ends = index[pos[pos < len(index)]]
+        return ends
     s = pd.Series(index, index=index)
     return pd.DatetimeIndex(s.groupby(index.to_period("W-FRI")).last().values)
 
 
-def _monthly(prices: pd.DataFrame, signal: pd.DataFrame, freq: str = "M") -> pd.DataFrame:
+def _monthly(prices: pd.DataFrame, signal: pd.DataFrame, freq: str = "M",
+             offset: int = 0) -> pd.DataFrame:
     """Keep period-end rows of `signal` (month end by default) and hold them
     until the next period end."""
-    ends = _period_ends(prices.index, freq)
+    ends = _period_ends(prices.index, freq, offset)
     w = pd.DataFrame(index=prices.index, columns=prices.columns, dtype=float)
     w.loc[ends] = signal.loc[ends].reindex(columns=prices.columns).values
     return w.ffill().fillna(0.0)
@@ -60,7 +69,7 @@ def sma_trend(prices: pd.DataFrame, asset: str = "SPY", window: int = 200,
 def momentum_rotation(prices: pd.DataFrame, assets: list[str], lookback: int = 126,
                       top_n: int = 1, abs_filter: bool = True,
                       safe: str | None = None, lookbacks: list[int] | None = None,
-                      freq: str = "M") -> pd.DataFrame:
+                      freq: str = "M", offset: int = 0) -> pd.DataFrame:
     """Each month hold the top_n assets by trailing return (equal weight).
 
     abs_filter: an asset only qualifies if its own trailing return is > 0
@@ -68,6 +77,7 @@ def momentum_rotation(prices: pd.DataFrame, assets: list[str], lookback: int = 1
     lookbacks: if given, rank on the average of several trailing returns
     instead of one `lookback` (less sensitive to the exact window).
     freq: "M" monthly (default), "W" weekly or "D" daily re-ranking.
+    offset: rank `offset` trading days after each month end (see _period_ends).
     """
     if lookbacks:
         mom = sum(prices[assets].pct_change(lb) for lb in lookbacks) / len(lookbacks)
@@ -75,7 +85,7 @@ def momentum_rotation(prices: pd.DataFrame, assets: list[str], lookback: int = 1
         mom = prices[assets].pct_change(lookback)
     sig = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
     # Only period-end rows are kept by _monthly, so only rank those.
-    ends = _period_ends(prices.index, freq)
+    ends = _period_ends(prices.index, freq, offset)
     for dt, row in mom.loc[ends].dropna(how="all").iterrows():
         picks = row.dropna().nlargest(top_n)
         for name, value in picks.items():
@@ -84,7 +94,7 @@ def momentum_rotation(prices: pd.DataFrame, assets: list[str], lookback: int = 1
                     sig.at[dt, safe] += 1.0 / top_n
                 continue
             sig.at[dt, name] += 1.0 / top_n
-    return _monthly(prices, sig, freq)
+    return _monthly(prices, sig, freq, offset)
 
 
 def rsi2_reversion(prices: pd.DataFrame, asset: str = "SPY", entry: float = 10,
@@ -187,7 +197,9 @@ def momentum_blend(prices: pd.DataFrame, aggr_share: float = 0.5, lookback: int 
                    safe: str = "IEF", trend_window: int | None = None,
                    trend_check: str = "D", vol_target: float | None = None,
                    vol_window: int = 20, vol_check: str = "W",
-                   safe_filter: bool = False) -> pd.DataFrame:
+                   safe_filter: bool = False, offset: int = 0,
+                   stable_assets: list[str] | None = None,
+                   aggr_assets: list[str] | None = None) -> pd.DataFrame:
     """The stable/3x momentum blend with optional ways to cut losses sooner.
 
     Defaults reproduce the original 50/50 blend (monthly, lookback 63):
@@ -202,12 +214,14 @@ def momentum_blend(prices: pd.DataFrame, aggr_share: float = 0.5, lookback: int 
         checked every `vol_check`.
       safe_filter: hold cash instead of `safe` while `safe` itself is falling
         (its own `lookback` return <= 0), e.g. bonds in 2022.
+      offset: monthly rebalance `offset` trading days after month end.
+      stable_assets / aggr_assets: replace the STABLE / AGGR candidate lists.
     Weights change on the day a check fires, so a runner that executes them
     must run on every check day, not only at month end.
     """
-    kw = dict(lookback=lookback, lookbacks=lookbacks, safe=safe, freq=rebalance)
-    stable = momentum_rotation(prices, STABLE, top_n=1, **kw)
-    aggr = momentum_rotation(prices, AGGR, top_n=2, **kw)
+    kw = dict(lookback=lookback, lookbacks=lookbacks, safe=safe, freq=rebalance, offset=offset)
+    stable = momentum_rotation(prices, stable_assets or STABLE, top_n=1, **kw)
+    aggr = momentum_rotation(prices, aggr_assets or AGGR, top_n=2, **kw)
     if trend_window:
         aggr = _trend_gate(prices, aggr, trend_window, safe, trend_check)
     if vol_target:
@@ -221,6 +235,50 @@ def momentum_blend(prices: pd.DataFrame, aggr_share: float = 0.5, lookback: int 
     return total
 
 
+def tranched(prices: pd.DataFrame, strategy: str = "momentum_blend", tranches: int = 4,
+             spacing: int = 5, **params) -> pd.DataFrame:
+    """Split the money into `tranches` equal parts that each run `strategy`
+    monthly but rebalance on different days (month end, +spacing, +2*spacing
+    trading days, ...). Removes the luck of one fixed rebalance day; the
+    portfolio changes a little every `spacing` days instead of all at once."""
+    parts = [REGISTRY[strategy](prices, offset=k * spacing, **params) for k in range(tranches)]
+    return sum(parts) / tranches
+
+
+def core_satellite(prices: pd.DataFrame, core: str = "QQQ", core_share: float = 0.5,
+                   strategy: str = "momentum_blend", **params) -> pd.DataFrame:
+    """Always hold `core_share` in `core`; run `strategy` with the rest."""
+    w = REGISTRY[strategy](prices, **params) * (1 - core_share)
+    w[core] = w[core] + core_share
+    return w
+
+
+def momentum_13612(prices: pd.DataFrame) -> pd.DataFrame:
+    """Keller's 13612W momentum: weighted 1/3/6/12-month returns (fast)."""
+    r = {m: prices.pct_change(21 * m) for m in (1, 3, 6, 12)}
+    return (12 * r[1] + 4 * r[3] + 2 * r[6] + r[12]) / 4
+
+
+def canary_gate(prices: pd.DataFrame, canary: list[str] | None = None, safe: str = "IEF",
+                strategy: str = "momentum_blend", **params) -> pd.DataFrame:
+    """Defensive Asset Allocation style breadth gate on a whole strategy.
+
+    Each month end look at the canaries (default emerging markets EEM and
+    aggregate bonds AGG). If both have positive 13612W momentum, run the
+    strategy in full; if one is negative, half of it moves to `safe`; if both
+    are negative, everything goes to `safe`. Unlike a trend filter on the held
+    asset, this reads risk appetite in other markets, which tends to turn first.
+    """
+    canary = canary or ["EEM", "AGG"]
+    w = REGISTRY[strategy](prices, **params)
+    bad = (momentum_13612(prices[canary]) <= 0).sum(axis=1) / len(canary)
+    bad = bad.where(momentum_13612(prices[canary]).notna().all(axis=1), 0.0)
+    ends = _month_ends(prices.index)
+    risk_off = bad.where(bad.index.isin(ends)).ffill().fillna(0.0)
+    cut = w.mul(risk_off, axis=0)
+    return _move_to(w, cut, safe)
+
+
 REGISTRY: dict[str, Strategy] = {
     "buy_and_hold": buy_and_hold,
     "sma_trend": sma_trend,
@@ -228,4 +286,7 @@ REGISTRY: dict[str, Strategy] = {
     "rsi2_reversion": rsi2_reversion,
     "blend": blend,
     "momentum_blend": momentum_blend,
+    "tranched": tranched,
+    "core_satellite": core_satellite,
+    "canary_gate": canary_gate,
 }
