@@ -248,3 +248,23 @@ def test_dashboard_reads_runner_output(tmp_path, close):
     out = tmp_path / "dash.html"
     assert build.main(["--data", str(r.dir), "--out", str(out), "--no-open"]) == 0
     assert "momentum_blend_multi" in out.read_text(encoding="utf-8")
+
+
+def test_pending_trades_settle_from_balance(tmp_path, close):
+    r = make_runner(tmp_path)
+    rows = [
+        {"symbol": "QQQ", "side": "buy", "qty": 65, "price": 750.11, "status": "pending"},
+        {"symbol": "UPRO", "side": "buy", "qty": 158, "price": 155.0, "status": "pending"},
+        {"symbol": "IEF", "side": "sell", "qty": 10, "price": 95.0, "status": "pending",
+         "held_before": 10},
+        {"symbol": "TQQQ", "side": "buy", "qty": 5, "price": 80.0, "status": "pending",
+         "held_before": 302},
+        {"symbol": "GLD", "side": "buy", "qty": 5, "price": 300.0, "status": "rejected"},
+    ]
+    (r.dir / "trades.jsonl").write_text("".join(json.dumps(x) + "\n" for x in rows), encoding="utf-8")
+    r._reconcile({"QQQ": {"qty": 65, "avg_price": 750.185}, "UPRO": {"qty": 145, "avg_price": 155.24},
+                  "TQQQ": {"qty": 302, "avg_price": 80.96}})
+    got = {(t["symbol"], t["status"], t["price"]) for t in trades(r)}
+    assert got == {("QQQ", "filled", 750.185), ("UPRO", "partial", 155.0),
+                   ("IEF", "filled", 95.0), ("GLD", "rejected", 300.0),
+                   ("TQQQ", "pending", 80.0)}
