@@ -15,6 +15,8 @@
 | `quant/ranking.py` | 학습(IS)/검증(OOS) 분리, 검증 구간 기준 순위, 파라미터 안정성 |
 | `scripts/run_backtest.py` | 모든 후보 전략 백테스트 후 `reports/ranking.md` 생성 |
 | `scripts/kiwoom_mock_check.py` | 키움 REST 미국주식 모의투자 지원 여부 확인 (조회만) |
+| `dashboard/` · `dashboard.bat` | 모의투자 대시보드 (수익률 vs SPY, 보유 종목, 매매 내역, 다음 리밸런싱) |
+| `docs/paper-format.md` | 실행기가 남기는 기록 파일 형식 |
 
 ## 실행 방법
 
@@ -25,6 +27,17 @@ pytest -q                               # 테스트
 ```
 
 PC 설치 없이 돌리려면 GitHub의 **Actions → backtest → Run workflow**를 누르면 됩니다.
+
+## 모의투자 대시보드
+
+`dashboard.bat`을 더블클릭하면 브라우저에 대시보드가 열립니다. 추가 설치는 필요 없습니다.
+
+```bash
+python dashboard/build.py            # paper/ 폴더의 기록으로 보기 (기록이 없으면 샘플)
+python dashboard/build.py --sample   # 샘플 데이터로 보기
+```
+
+결과 파일은 `reports/dashboard.html`에 저장됩니다. 브라우저에서 F11(전체화면)으로 보면 한 화면에 모두 들어옵니다. 기록 형식은 `docs/paper-format.md`를 보세요.
 
 ## 순위 규칙
 

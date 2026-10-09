@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "strategy": {
+    "id": "momentum_blend_multi",
+    "name": "혼합 50/50 멀티기간 모멘텀",
+    "description": "안정 바구니 50%는 평균 모멘텀(1·3·6·12개월 수익률 평균) 1등, 공격 바구니 50%는 1·2등을 반씩. 마이너스면 IEF.",
+    "sleeves": [
+      {
+        "id": "stable",
+        "name": "안정 바구니",
+        "weight": 0.5,
+        "universe": [
+          "SPY",
+          "QQQ",
+          "IWM",
+          "EFA",
+          "GLD"
+        ]
+      },
+      {
+        "id": "aggressive",
+        "name": "공격 바구니",
+        "weight": 0.5,
+        "universe": [
+          "TQQQ",
+          "UPRO",
+          "GLD",
+          "TLT"
+        ]
+      }
+    ],
+    "safe_asset": "IEF"
+  },
+  "mode": "simulate",
+  "base_currency": "USD",
+  "benchmark": "SPY",
+  "started_at": "2026-04-01",
+  "initial_capital": 10000.0,
+  "updated_at": "2026-10-08T06:10:00+09:00",
+  "cash": 475.97,
+  "positions": [
+    {
+      "symbol": "QQQ",
+      "qty": 8,
+      "avg_price": 617.66,
+      "last_price": 616.45,
+      "sleeve": "stable"
+    },
+    {
+      "symbol": "TQQQ",
+      "qty": 21,
+      "avg_price": 95.33,
+      "last_price": 134.79,
+      "sleeve": "aggressive"
+    },
+    {
+      "symbol": "UPRO",
+      "qty": 20,
+      "avg_price": 99.24,
+      "last_price": 135.51,
+      "sleeve": "aggressive"
+    }
+  ],
+  "targets": [
+    {
+      "symbol": "QQQ",
+      "weight": 0.5,
+      "sleeve": "stable"
+    },
+    {
+      "symbol": "TQQQ",
+      "weight": 0.25,
+      "sleeve": "aggressive"
+    },
+    {
+      "symbol": "UPRO",
+      "weight": 0.25,
+      "sleeve": "aggressive"
+    }
+  ],
+  "last_rebalance": "2026-10-01",
+  "next_rebalance": {
+    "signal_date": "2026-10-30",
+    "order_date": "2026-11-02"
+  },
+  "signal": {
+    "as_of": "2026-09-30",
+    "lookback_days": 252,
+    "lookbacks": [
+      21,
+      63,
+      126,
+      252
+    ],
+    "scores": [
+      {
+        "symbol": "QQQ",
+        "sleeve": "stable",
+        "return": 0.14,
+        "selected": true
+      },
+      {
+        "symbol": "GLD",
+        "sleeve": "stable",
+        "return": 0.0992,
+        "selected": false
+      },
+      {
+        "symbol": "SPY",
+        "sleeve": "stable",
+        "return": 0.0139,
+        "selected": false
+      },
+      {
+        "symbol": "IWM",
+        "sleeve": "stable",
+        "return": -0.0305,
+        "selected": false
+      },
+      {
+        "symbol": "EFA",
+        "sleeve": "stable",
+        "return": -0.0484,
+        "selected": false
+      },
+      {
+        "symbol": "TQQQ",
+        "sleeve": "aggressive",
+        "return": 0.4632,
+        "selected": true
+      },
+      {
+        "symbol": "UPRO",
+        "sleeve": "aggressive",
+        "return": 0.2801,
+        "selected": true
+      },
+      {
+        "symbol": "GLD",
+        "sleeve": "aggressive",
+        "return": 0.0992,
+        "selected": false
+      },
+      {
+        "symbol": "TLT",
+        "sleeve": "aggressive",
+        "return": 0.096,
+        "selected": false
+      }
+    ]
+  },
+  "alerts": [
+    {
+      "level": "info",
+      "message": "샘플 데이터입니다. 실제 실행기가 paper/ 폴더에 기록을 남기면 그 값으로 바뀝니다."
+    }
+  ]
+}
