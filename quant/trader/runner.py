@@ -154,6 +154,39 @@ class Runner:
         with open(self.dir / name, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
+    def _reconcile(self, positions: dict[str, dict]) -> None:
+        """Brokers like Kiwoom only accept an order; the fill shows up later in
+        the balance. Settle earlier "pending" trades from current holdings:
+        compared with `held_before` (shares held when the order went out), a
+        buy is filled once all its shares have arrived (price = the broker's
+        average cost), partial while some have; a sell is filled once its
+        shares are gone. Anything else stays pending."""
+        p = self.dir / "trades.jsonl"
+        if not p.exists():
+            return
+        rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]
+        changed = False
+        for r in rows:
+            if r.get("status") not in ("pending", "partial"):
+                continue
+            held = positions.get(r["symbol"], {}).get("qty", 0)
+            before = r.get("held_before", 0)
+            if r["side"] == "buy" and held >= before + r["qty"]:
+                r["status"], r["price"] = "filled", round(positions[r["symbol"]]["avg_price"], 4)
+            elif r["side"] == "buy" and held > before:
+                r["status"] = "partial"
+            elif r["side"] == "sell" and held <= before - r["qty"]:
+                r["status"] = "filled"
+            else:
+                continue
+            r.pop("message", None)
+            changed = True
+        if changed:
+            tmp = self.dir / ".trades.jsonl.tmp"
+            tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+                           encoding="utf-8")
+            os.replace(tmp, p)
+
     def _equity_row(self, rec: dict) -> None:
         p = self.dir / "equity.jsonl"
         rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
@@ -199,6 +232,7 @@ class Runner:
                            f"계좌 조회에 실패해 매매하지 않았습니다: {str(e)[:200]}"})
             return self._state(now, meta, alerts=alerts, positions={}, cash=None,
                                prices=prices)
+        self._reconcile(positions)
         meta.setdefault("started_at", str(today.date()))
         meta.setdefault("initial_capital", cash + sum(p["qty"] * prices.get(s, 0.0)
                                                       for s, p in positions.items()))
@@ -230,7 +264,8 @@ class Runner:
                            "fee": round(res.get("fee", 0.0), 2),
                            "status": res.get("status", "filled" if ok else "rejected"),
                            "order_id": res.get("order_no"),
-                           "sleeve": sleeve_of.get(o["symbol"]), "note": "월간 리밸런싱"}
+                           "sleeve": sleeve_of.get(o["symbol"]), "note": "월간 리밸런싱",
+                           "held_before": positions.get(o["symbol"], {}).get("qty", 0)}
                     if not ok:
                         rec["message"] = res.get("msg", "")
                         alerts.append({"level": "warn", "message":
