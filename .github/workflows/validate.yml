@@ -6,6 +6,7 @@ on:
     paths:
       - "scripts/validate_strategy.py"
       - "quant/**"
+      - ".github/workflows/validate.yml"
   workflow_dispatch:
     inputs:
       aggr_share:
