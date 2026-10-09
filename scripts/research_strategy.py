@@ -157,6 +157,42 @@ def main():
                          **stats(real(strat, params, cost=c).returns.loc[START:])})
     out += ["## 5. 거래비용 2배일 때\n", fmt(pd.DataFrame(rows)), ""]
 
+    # 6. Round 2: the canary gate cut drawdowns the most. Is it robust, and
+    # can the drawdown it saves buy a bigger aggressive share?
+    rows = []
+    cases = {
+        "카나리아 기본 (공격 50%)": {},
+        "공격 60%": {"aggr_share": 0.6},
+        "공격 70%": {"aggr_share": 0.7},
+        "공격 100%": {"aggr_share": 1.0},
+        "+ QQQ 30% (위험 신호 땐 함께 피난)": {"strategy": "core_satellite", "core": "QQQ", "core_share": 0.3},
+        "+ 2배 ETF": {"aggr_assets": ["QLD", "SSO", "GLD", "TLT"]},
+        "+ 2배 ETF, 공격 100%": {"aggr_assets": ["QLD", "SSO", "GLD", "TLT"], "aggr_share": 1.0},
+        "피난처 = 현금": {"safe": None},
+        "신호 EEM만": {"canary": ["EEM"]},
+        "신호 AGG만": {"canary": ["AGG"]},
+        "신호 EEM·AGG·EFA": {"canary": ["EEM", "AGG", "EFA"]},
+    }
+    for name, extra in cases.items():
+        res = real("canary_gate", {**BASE, **extra})
+        s = stats(res.returns.loc[START:])
+        full = summarize(sim("canary_gate", {**BASE, **extra}).returns)
+        rows.append({"구분": name, **s,
+                     "2015~19 연수익": summarize(res.returns.loc["2015":"2019"])["cagr"],
+                     "2020~ 연수익": summarize(res.returns.loc["2020":])["cagr"],
+                     "전체(2007~,모의) 연수익": full["cagr"], "전체 최대낙폭": full["mdd"],
+                     "SPY 이김": beats(s, spy)})
+    out += ["## 6. 카나리아 심화\n", fmt(pd.DataFrame(rows)), ""]
+
+    rows = []
+    for off in (0, 3, 5, 8, 10, 15):
+        for sh in (0.5, 0.7):
+            s = stats(real("canary_gate", {**BASE, "offset": off, "aggr_share": sh})
+                      .returns.loc[START:])
+            rows.append({"리밸런싱일": "월말" if off == 0 else f"월말+{off}거래일",
+                         "공격 비중": f"{sh:.0%}", **s, "SPY 이김": beats(s, spy)})
+    out += ["### 카나리아: 리밸런싱 날짜 운 점검\n", fmt(pd.DataFrame(rows)), ""]
+
     Path("reports").mkdir(exist_ok=True)
     text = "\n".join(out).replace("nan%", "-").replace("| nan ", "| -   ")
     Path("reports/research.md").write_text(text, encoding="utf-8")
