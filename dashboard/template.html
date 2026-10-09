@@ -294,6 +294,7 @@ tfoot td { border-top: 1px solid var(--line); border-bottom: 0; color: var(--mut
 .more:hover { border-color: var(--accent); }
 .status { font-size: 0.75rem; color: var(--muted); }
 .status.bad { color: var(--up); }
+.status.wait { color: var(--warn); }
 .empty { padding: 28px 8px; text-align: center; color: var(--muted); font-size: 0.875rem; }
 
 details { margin-top: 12px; font-size: 0.8125rem; }
@@ -437,7 +438,7 @@ footer code { font-family: var(--font-data); color: var(--muted); }
   };
   var MODES = { simulate: "연습 모드 · 가상 체결", kiwoom_mock: "키움 모의투자", kiwoom_live: "실계좌" };
   var SIDE = { buy: "매수", sell: "매도" };
-  var STATUS = { filled: "체결", partial: "일부 체결", pending: "대기", rejected: "거부", cancelled: "취소" };
+  var STATUS = { filled: "체결", partial: "일부 체결", pending: "체결 확인 중", rejected: "거부", cancelled: "취소" };
   var WEEK = ["일", "월", "화", "수", "목", "금", "토"];
 
   function $(id) { return document.getElementById(id); }
@@ -827,14 +828,15 @@ footer code { font-family: var(--font-data); color: var(--muted); }
         html += '<tr class="group-row"><td colspan="7"><b>' + fmtDate(t.date, true) + "</b>" + esc(t.note || "") +
           (t.note ? " · " : "") + (sells ? "매도 " + sells + "건" : "") + (sells && buys ? " · " : "") + (buys ? "매수 " + buys + "건" : "") + "</td></tr>";
       }
-      var amt = t.qty * t.price, bad = t.status === "rejected" || t.status === "cancelled";
+      var hasPx = t.price != null && +t.price > 0;
+      var amt = hasPx ? t.qty * t.price : null, bad = t.status === "rejected" || t.status === "cancelled", wait = t.status === "pending";
       html += "<tr" + (bad ? ' style="opacity:.6"' : "") + "><td><div class=\"sym\"><b>" + esc(t.symbol) + "</b><small class=\"num\">" + fmtTime(t.time) + " · " + esc(NAMES[t.symbol] || "") + "</small></div></td>" +
         '<td><span class="side ' + esc(t.side) + '">' + (SIDE[t.side] || esc(t.side)) + "</span></td>" +
         '<td class="num">' + (+t.qty).toLocaleString("en-US") + "</td>" +
-        '<td class="num hide-sm">' + usd(+t.price) + "</td>" +
+        '<td class="num hide-sm">' + (hasPx ? usd(+t.price) : "—") + "</td>" +
         '<td class="num">' + usd(amt) + "</td>" +
         '<td class="num hide-sm muted">' + usd(+t.fee || 0) + "</td>" +
-        '<td class="hide-sm"><span class="status' + (bad ? " bad" : "") + '" title="' + esc(t.message || "") + '">' + (STATUS[t.status] || esc(t.status || "")) + "</span></td></tr>";
+        '<td class="hide-sm"><span class="status' + (bad ? " bad" : wait ? " wait" : "") + '" title="' + esc(t.message || "") + '">' + (STATUS[t.status] || esc(t.status || "")) + "</span></td></tr>";
     });
     if (hiddenDays) html += '<tr><td colspan="7" style="text-align:center;padding-top:14px"><button type="button" class="more" id="trades-more">이전 매매 ' + hiddenDays + "일 더 보기</button></td></tr>";
     $("trades").innerHTML = html + "</tbody>";
