@@ -111,6 +111,7 @@ class KiwoomBroker:
         return self._token
 
     MIN_GAP = 1.0  # seconds between requests; Kiwoom rejects bursts
+    LIMIT_SLIP = 0.015  # marketable-limit buffer; the runner keeps 2% cash
 
     def call(self, path: str, api_id: str, body: dict, retries: int = 3) -> dict:
         for attempt in range(retries + 1):
@@ -184,14 +185,19 @@ class KiwoomBroker:
                     limit_price: float | None = None) -> dict:
         """ust20000 (buy) / ust20001 (sell) on /api/us/ordr.
 
-        Market order (trde_tp 03) unless `limit_price` is given (00, 지정가).
-        Kiwoom only accepts the order here; the fill shows up later in the
-        balance, so the result is recorded as "pending".
+        Always a limit order (trde_tp 00): the mock server rejects market
+        orders (RC4065 "모의투자 지정가 매매만 가능합니다"). Without an explicit
+        `limit_price` the limit is set LIMIT_SLIP past `ref_price` (above for a
+        buy, below for a sell) so it fills right away like a market order but
+        never at a runaway price. Kiwoom only accepts the order here; the fill
+        shows up later in the balance, so the result is recorded as "pending".
         """
+        if not limit_price:
+            slip = self.LIMIT_SLIP if side == "buy" else -self.LIMIT_SLIP
+            limit_price = round(ref_price * (1 + slip), 2)
         body = {"stex_tp": self.exchange_of(ticker), "stk_cd": ticker,
-                "ord_qty": str(int(qty)),
-                "ord_uv": f"{limit_price:.2f}" if limit_price else "",
-                "trde_tp": "00" if limit_price else "03"}
+                "ord_qty": str(int(qty)), "ord_uv": f"{limit_price:.2f}",
+                "trde_tp": "00"}
         if side == "sell":
             body["stop_pric"] = ""
         api_id = "ust20000" if side == "buy" else "ust20001"
@@ -206,7 +212,7 @@ class KiwoomBroker:
                         "msg": "키움 응답 없음 - 접수 여부 불확실, 다음 실행 때 잔고로 확인"}
             return {"ok": False, "msg": msg}
         return {"ok": True, "status": "pending", "order_no": data.get("ord_no"),
-                "fill_price": limit_price or ref_price, "fee": 0.0,
+                "fill_price": ref_price, "fee": 0.0,
                 "msg": data.get("return_msg", "")}
 
 

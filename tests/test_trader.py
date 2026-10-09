@@ -121,8 +121,10 @@ def test_kiwoom_order_bodies():
                    "fill_price": 500.0, "fee": 0.0, "msg": ""}
     assert k.sent[0] == ("/api/us/ordr", "ust20000",
                          {"stex_tp": "NY", "stk_cd": "SPY", "ord_qty": "3",
-                          "ord_uv": "", "trde_tp": "03"})
-    assert k.sent[1][1] == "ust20001" and k.sent[1][2]["stex_tp"] == "ND"
+                          "ord_uv": "507.50", "trde_tp": "00"})
+    sell = k.sent[1][2]
+    assert k.sent[1][1] == "ust20001" and sell["stex_tp"] == "ND"
+    assert sell["ord_uv"] == "394.00" and sell["trde_tp"] == "00"
 
 
 def test_kiwoom_order_failure_is_reported():
