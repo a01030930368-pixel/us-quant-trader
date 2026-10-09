@@ -70,3 +70,9 @@ def test_status_file_written(tmp_path, close):
     status = json.loads((r.dir / "status.json").read_text(encoding="utf-8"))
     assert status["schema"] == 1 and status["holdings"]
     assert (r.dir / "equity.csv").exists() and (r.dir / "trades.jsonl").exists()
+
+
+def test_stale_prices_halt(tmp_path, close):
+    r = make_runner(tmp_path)
+    s = r.run(close=close, now=datetime(2026, 10, 30, tzinfo=timezone.utc))
+    assert s["halted"] and "데이터" in s["note"] and r.broker.positions() == {}

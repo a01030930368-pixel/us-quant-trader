@@ -38,6 +38,7 @@ class TraderConfig:
     cash_buffer: float = 0.02          # keep 2% in cash for fees / price moves
     max_order_usd: float = 50_000.0    # refuse any single order above this
     min_trade_usd: float = 50.0        # skip tiny rebalancing trades
+    max_data_age_days: int = 5         # refuse to trade on stale prices
     state_dir: Path = Path("state")
     strategy_name: str = field(init=False)
 
@@ -118,6 +119,10 @@ class Runner:
             close = load_prices(DATA_TICKERS, "2009-01-01", use_cache=False).dropna()
         last = close.index[-1]
         prices = {t: float(close[t].iloc[-1]) for t in close.columns}
+        age = (pd.Timestamp(now.date()) - last.normalize()).days
+        if age > self.cfg.max_data_age_days:
+            return self._write_status(now, note=f"가격 데이터가 {age}일 전 것이라 매매하지 않았습니다.",
+                                      halted=True, last_close=str(last.date()))
 
         sig = signal_date(close.index, pd.Timestamp(now.date()))
         meta = self._meta()
