@@ -85,6 +85,7 @@ class KiwoomBroker:
         self.exchanges = exchanges or {}
         self._token: str | None = None
         self._token_exp = 0.0
+        self._last_call = 0.0
 
     @classmethod
     def from_env(cls, mock: bool = True, **kw) -> "KiwoomBroker":
@@ -109,8 +110,14 @@ class KiwoomBroker:
         self._token_exp = _parse_expiry(body.get("expires_dt"))
         return self._token
 
+    MIN_GAP = 1.0  # seconds between requests; Kiwoom rejects bursts
+
     def call(self, path: str, api_id: str, body: dict, retries: int = 2) -> dict:
         for attempt in range(retries + 1):
+            wait = self._last_call + self.MIN_GAP - time.time()
+            if wait > 0:
+                time.sleep(wait)
+            self._last_call = time.time()
             r = requests.post(f"{self.base}{path}",
                               headers={"Content-Type": "application/json;charset=UTF-8",
                                        "authorization": f"Bearer {self.token()}",
@@ -119,7 +126,8 @@ class KiwoomBroker:
             data = r.json() if r.content else {}
             if r.ok and str(data.get("return_code", "0")) == "0":
                 return data
-            if attempt < retries and r.status_code >= 500:
+            limited = r.status_code == 429 or "초과" in str(data.get("return_msg", ""))
+            if attempt < retries and (r.status_code >= 500 or limited):
                 time.sleep(2 * (attempt + 1))
                 continue
             raise RuntimeError(f"{api_id} 실패 (HTTP {r.status_code}): {data}")

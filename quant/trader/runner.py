@@ -51,7 +51,10 @@ class TraderConfig:
     lookback: int = 63
     initial_capital: float = 10_000.0
     cash_buffer: float = 0.02          # keep 2% in cash for fees / price moves
-    max_order_usd: float = 50_000.0    # refuse any single order above this
+    # Refuse any single order above this. None = current equity, which still
+    # catches price/unit bugs; GLD sits in both sleeves, so one order can
+    # legitimately be ~75% of the account (or 100% when everything goes to IEF).
+    max_order_usd: float | None = None
     min_trade_usd: float = 50.0        # skip tiny rebalancing trades
     max_data_age_days: int = 5         # refuse to trade on stale prices
     state_dir: Path = Path("paper")
@@ -187,7 +190,9 @@ class Runner:
 
         if due:
             orders = plan_orders(weights, prices, positions, cash, self.cfg)
-            too_big = [o for o in orders if o["value"] > self.cfg.max_order_usd]
+            equity = cash + sum(p["qty"] * prices.get(s, 0.0) for s, p in positions.items())
+            limit = self.cfg.max_order_usd or equity
+            too_big = [o for o in orders if o["value"] > limit]
             if too_big:
                 alerts.append({"level": "error", "message":
                                f"주문 한도 초과로 차단: {too_big[0]['symbol']} "
