@@ -1,0 +1,32 @@
+# GitHub 웹에서 Actions 탭 -> backtest -> Run workflow 를 누르면
+# 실제 가격 데이터로 백테스트를 돌리고 순위표(reports)를 첨부파일로 남깁니다.
+name: backtest
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "데이터 시작일"
+        default: "2007-01-01"
+      split:
+        description: "검증(OOS) 시작일"
+        default: "2018-01-01"
+      cost_bps:
+        description: "편도 거래비용 (bp)"
+        default: "15"
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: >
+          python scripts/run_backtest.py --start ${{ inputs.start }}
+          --split ${{ inputs.split }} --cost-bps ${{ inputs.cost_bps }}
+      - run: cat reports/ranking.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ranking
+          path: reports/
