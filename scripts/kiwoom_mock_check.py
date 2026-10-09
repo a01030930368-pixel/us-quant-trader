@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import requests
@@ -50,6 +51,37 @@ def get_token(appkey: str, secret: str) -> str:
     return token
 
 
+def find_exchanges(token: str, path: str, api_id: str) -> None:
+    """Try each exchange code per ticker. Calls are spaced out because Kiwoom
+    rejects bursts of requests (rate limit), which looks like "not found"."""
+    tickers = ["SPY", "QQQ", "IWM", "EFA", "GLD", "TLT", "IEF", "TQQQ", "UPRO"]
+    print("\n티커별 거래소 코드 (호출 간격을 두어 1분 정도 걸립니다):")
+    for t in tickers:
+        found, errors = [], []
+        for ex in ("ND", "NY", "NA"):
+            for attempt in range(3):
+                time.sleep(1.0 + attempt)
+                r = requests.post(f"{MOCK}{path}",
+                                  headers={"Content-Type": "application/json;charset=UTF-8",
+                                           "authorization": f"Bearer {token}", "api-id": api_id},
+                                  json={"stex_tp": ex, "stk_cd": t}, timeout=15)
+                try:
+                    body = r.json()
+                except ValueError:
+                    body = {}
+                msg = str(body.get("return_msg", f"HTTP {r.status_code}"))
+                if r.status_code == 429 or "초과" in msg:
+                    continue  # rate limited: wait longer and retry
+                break
+            if r.ok and str(body.get("return_code")) == "0":
+                found.append(ex)
+            else:
+                errors.append(f"{ex}: {msg[:60]}")
+        line = ", ".join(found) if found else "찾지 못함  (" + " / ".join(errors) + ")"
+        print(f"  {t:5} -> {line}")
+    print("\n이 결과를 Claude에게 그대로 붙여 주세요.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--path", default="/api/us/mrkcond",
@@ -60,6 +92,8 @@ def main() -> None:
                     help="거래소 구분: ND=NASDAQ, NY=NYSE, NA=AMEX")
     ap.add_argument("--body", default=None,
                     help='요청 본문 JSON을 직접 지정 (가이드의 필드명이 다를 때). 예: \'{"stk_cd":"AAPL"}\'')
+    ap.add_argument("--find-exchange", action="store_true",
+                    help="실행기가 쓰는 ETF마다 맞는 거래소 코드(ND/NY/NA)를 찾아 출력")
     args = ap.parse_args()
 
     load_env()
@@ -69,6 +103,9 @@ def main() -> None:
         sys.exit(1)
 
     token = get_token(appkey, secret)
+    if args.find_exchange:
+        find_exchanges(token, args.path, args.api_id)
+        return
     body = json.loads(args.body) if args.body else {"stex_tp": args.exchange, "stk_cd": args.ticker}
     r = requests.post(f"{MOCK}{args.path}",
                       headers={"Content-Type": "application/json;charset=UTF-8",
