@@ -177,6 +177,19 @@ def test_account_read_failure_is_reported_not_raised(tmp_path, close):
     assert (r.dir / "state.json").exists() and trades(r) == []
 
 
+def test_account_read_failure_keeps_last_holdings(tmp_path, close):
+    ok = make_runner(tmp_path)
+    cfg = ok.cfg
+    first = ok.run(close=close, now=datetime(2026, 10, 8, tzinfo=timezone.utc))
+    assert first["positions"]
+    r = Runner(FailingBroker(cfg.state_dir / "sim_account.json"), cfg)
+    s = r.run(close=close, now=datetime(2026, 10, 9, tzinfo=timezone.utc))
+    assert "계좌 조회" in errors(s)
+    assert [(p["symbol"], p["qty"]) for p in s["positions"]] == \
+        [(p["symbol"], p["qty"]) for p in first["positions"]]
+    assert s["cash"] == first["cash"] and s["targets"]
+
+
 def test_kiwoom_retries_when_server_busy(monkeypatch):
     import quant.trader.brokers as b
 
@@ -188,6 +201,7 @@ def test_kiwoom_retries_when_server_busy(monkeypatch):
             return self.body
 
     replies = [Resp({"return_code": 20, "return_msg": "[2000](RC9002:모의투자 서비스가 지연되고 있습니다. 잠시후 재시도 바랍니다.)"}),
+               Resp({"return_code": 20, "return_msg": "[2000](1:Timeover response)"}),
                Resp({"return_code": 0, "result_list": []})]
     monkeypatch.setattr(b.requests, "post", lambda *a, **k: replies.pop(0))
     monkeypatch.setattr(b.time, "sleep", lambda s: None)
