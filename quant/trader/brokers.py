@@ -3,7 +3,7 @@
 Every broker exposes the same small surface so the runner never cares which
 one it talks to:
 
-    positions() -> {ticker: shares}
+    positions() -> {ticker: {"qty": shares, "avg_price": average cost}}
     cash_usd() -> float
     place_order(ticker, side, qty, ref_price) -> dict   (side: "buy" | "sell")
 """
@@ -29,15 +29,17 @@ class SimBroker:
         if self.path.exists():
             self.acct = json.loads(self.path.read_text(encoding="utf-8"))
         else:
-            self.acct = {"cash": starting_cash, "positions": {}}
+            self.acct = {"cash": starting_cash, "positions": {}, "avg_price": {}}
             self._save()
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self.acct, indent=2), encoding="utf-8")
 
-    def positions(self) -> dict[str, int]:
-        return {k: int(v) for k, v in self.acct["positions"].items() if v}
+    def positions(self) -> dict[str, dict]:
+        avg = self.acct.setdefault("avg_price", {})
+        return {k: {"qty": int(v), "avg_price": float(avg.get(k, 0.0))}
+                for k, v in self.acct["positions"].items() if v}
 
     def cash_usd(self) -> float:
         return float(self.acct["cash"])
@@ -50,7 +52,10 @@ class SimBroker:
             if value + fee > self.acct["cash"] + 1e-6:
                 return {"ok": False, "msg": "예수금 부족"}
             self.acct["cash"] -= value + fee
-            pos[ticker] = pos.get(ticker, 0) + qty
+            avg = self.acct.setdefault("avg_price", {})
+            held = pos.get(ticker, 0)
+            avg[ticker] = (held * avg.get(ticker, 0.0) + value) / (held + qty)
+            pos[ticker] = held + qty
         else:
             if pos.get(ticker, 0) < qty:
                 return {"ok": False, "msg": "보유수량 부족"}
@@ -65,9 +70,8 @@ class KiwoomBroker:
     """Kiwoom REST API (US stocks). mock=True uses the paper-trading server.
 
     Token issue and quotes follow the official guide (au10001, usa20100).
-    Balance/deposit/order TRs (ust21070, ust21160, ust20000, ust20001) are
-    filled in from the guide pages; until then they raise NotImplementedError
-    so nothing is ever sent by guesswork.
+    Orders use ust20000/ust20001, holdings ust21070 and USD cash ust21160,
+    with fields taken from the official guide pages.
     """
 
     REAL = "https://api.kiwoom.com"
@@ -129,15 +133,56 @@ class KiwoomBroker:
         return self.call("/api/us/mrkcond", "usa20100",
                          {"stex_tp": self.exchange_of(ticker), "stk_cd": ticker})
 
-    # -- account / orders (spec pending) -----------------------------------
-    def positions(self) -> dict[str, int]:
-        raise NotImplementedError("ust21070 명세 반영 전입니다.")
+    # -- account / orders ------------------------------------------------
+    def positions(self) -> dict[str, dict]:
+        """ust21070 on /api/us/acnt; empty body means every holding.
+
+        Uses poss_qty (보유수량), which includes shares bought but not yet
+        settled, so a fill from yesterday counts right away."""
+        data = self.call("/api/us/acnt", "ust21070", {"stex_tp": "", "stk_cd": ""})
+        out: dict[str, dict] = {}
+        for row in data.get("result_list") or []:
+            qty = int(_num(row.get("poss_qty")))
+            if qty:
+                out[row["stk_cd"].strip()] = {"qty": qty,
+                                              "avg_price": _num(row.get("frgn_stk_book_uv"))}
+        return out
 
     def cash_usd(self) -> float:
-        raise NotImplementedError("ust21160 명세 반영 전입니다.")
+        """ust21160 on /api/us/acnt (no request fields).
 
-    def place_order(self, ticker: str, side: str, qty: int, ref_price: float) -> dict:
-        raise NotImplementedError("ust20000/ust20001 명세 반영 전입니다.")
+        positions() counts unsettled shares, so cash must also be the amount
+        after pending settlements: the furthest-out D-day USD deposit
+        (d4 -> d0) that the response fills in."""
+        data = self.call("/api/us/acnt", "ust21160", {})
+        for day in ("d4", "d3", "d2", "d1", "d0"):
+            value = str(data.get(f"{day}_usd_fx_entr") or "").strip()
+            if value:
+                return _num(value)
+        raise RuntimeError(f"ust21160 응답에 외화예수금이 없습니다: {data}")
+
+    def place_order(self, ticker: str, side: str, qty: int, ref_price: float,
+                    limit_price: float | None = None) -> dict:
+        """ust20000 (buy) / ust20001 (sell) on /api/us/ordr.
+
+        Market order (trde_tp 03) unless `limit_price` is given (00, 지정가).
+        Kiwoom only accepts the order here; the fill shows up later in the
+        balance, so the result is recorded as "pending".
+        """
+        body = {"stex_tp": self.exchange_of(ticker), "stk_cd": ticker,
+                "ord_qty": str(int(qty)),
+                "ord_uv": f"{limit_price:.2f}" if limit_price else "",
+                "trde_tp": "00" if limit_price else "03"}
+        if side == "sell":
+            body["stop_pric"] = ""
+        api_id = "ust20000" if side == "buy" else "ust20001"
+        try:
+            data = self.call("/api/us/ordr", api_id, body, retries=0)
+        except (RuntimeError, requests.RequestException, ValueError) as e:
+            return {"ok": False, "msg": str(e)[:300]}
+        return {"ok": True, "status": "pending", "order_no": data.get("ord_no"),
+                "fill_price": limit_price or ref_price, "fee": 0.0,
+                "msg": data.get("return_msg", "")}
 
 
 def _parse_expiry(value: str | None) -> float:
@@ -147,3 +192,13 @@ def _parse_expiry(value: str | None) -> float:
         return dt.replace(tzinfo=timezone.utc).timestamp() - 9 * 3600  # KST
     except (TypeError, ValueError):
         return time.time() + 12 * 3600
+
+
+def _num(value) -> float:
+    """Kiwoom sends numbers as strings, sometimes zero-padded or signed
+    ("+000012.34"); blanks count as 0."""
+    text = str(value or "").replace(",", "").strip()
+    try:
+        return float(text) if text else 0.0
+    except ValueError:
+        return 0.0

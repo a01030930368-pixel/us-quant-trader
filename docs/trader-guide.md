@@ -5,14 +5,17 @@
 python scripts/run_trader.py --check     # 주문 계획만 보기
 python scripts/run_trader.py             # 가상 계좌(1만 달러)로 실제처럼 기록
 ```
-결과는 `state/` 폴더에 쌓입니다.
+결과는 `paper/` 폴더에 쌓입니다.
 
 ## 2. 키움 모의투자로 실행
-키움 주문/잔고 API가 반영된 뒤에 사용합니다.
 ```
-python scripts/run_trader.py --mode kiwoom --check   # 계획 확인
+python scripts/run_trader.py --mode kiwoom --check   # 잔고·예수금만 조회하고 주문 계획 출력
 python scripts/run_trader.py --mode kiwoom           # 실제 모의 주문
 ```
+- `--check`는 주문을 내지 않고 잔고(ust21070)와 예수금(ust21160)만 읽습니다. 처음엔 꼭 이것부터 실행하세요.
+- 주문은 시장가(ust20000 매수, ust20001 매도)로 나가며, 미국장이 열려 있을 때만 체결됩니다.
+- 키움은 주문을 받기만 하고 체결은 나중에 되므로 `trades.jsonl`에는 `pending`으로 기록됩니다. 다음 실행 때 잔고에서 실제 보유수량을 다시 읽습니다.
+- 매도 대금이 아직 정산 전이라 같은 날 매수가 "예수금 부족"으로 거부될 수 있습니다. 그러면 그달 리밸런싱이 끝나지 않은 것으로 남고, 다음 날 실행 때 부족한 만큼만 다시 주문합니다.
 
 ## 3. 매일 자동 실행 (윈도우 작업 스케줄러)
 미국장은 한국시간 밤 10시 30분(서머타임) 또는 11시 30분에 열립니다.
@@ -30,7 +33,7 @@ python scripts/run_trader.py --mode kiwoom           # 실제 모의 주문
 PC가 꺼져 있어서 실행되지 못한 날이 있어도 괜찮습니다. 다음 실행 때 밀린 리밸런싱을 처리합니다.
 
 ## 4. 긴급 정지
-`state` 폴더에 `STOP`이라는 이름의 빈 파일을 만들면 그 뒤로는 주문을 내지 않습니다. 파일을 지우면 다시 동작합니다.
+`paper` 폴더에 `STOP`이라는 이름의 빈 파일을 만들면 그 뒤로는 주문을 내지 않습니다. 파일을 지우면 다시 동작합니다.
 
 ## 안전장치
 - 한 번에 5만 달러를 넘는 주문은 막습니다 (`TraderConfig.max_order_usd`).

@@ -4,12 +4,11 @@
     python scripts/run_trader.py --mode kiwoom     # 키움 모의투자 서버
     python scripts/run_trader.py --check           # 주문 없이 계획만 확인
 
-매매를 즉시 멈추려면 state 폴더에 STOP 이라는 빈 파일을 만드세요.
+매매를 즉시 멈추려면 paper 폴더에 STOP 이라는 빈 파일을 만드세요.
 """
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -37,12 +36,16 @@ def main() -> None:
             "SPY": "NY", "IWM": "NY", "EFA": "NY", "GLD": "NY", "IEF": "ND",
             "TLT": "ND", "QQQ": "ND", "TQQQ": "ND", "UPRO": "NY"})
 
-    status = Runner(broker, cfg, mode=args.mode).run(execute=not args.check)
-    print(json.dumps({k: status[k] for k in
-                      ("note", "signal_date", "equity_usd", "cash_usd", "target_weights")},
-                     ensure_ascii=False, indent=2))
-    for o in status["planned_orders"]:
-        print(f"  {o['side']:4} {o['ticker']:5} {o['qty']:>5}주 @ {o['ref_price']:.2f}")
+    mode = "simulate" if args.mode == "sim" else "kiwoom_mock"
+    status = Runner(broker, cfg, mode=mode).run(execute=not args.check)
+    print(f"전략: {status['strategy']['name']}  모드: {status['mode']}")
+    print(f"신호 기준일: {status['signal']['as_of']}  마지막 리밸런싱: {status['last_rebalance']}")
+    print(f"현금: {status['cash']}")
+    for p in status["positions"]:
+        print(f"  보유 {p['symbol']:5} {p['qty']:>5}주  평균단가 {p['avg_price']}")
+    for a in status["alerts"]:
+        print(f"  [{a['level']}] {a['message']}")
+    print("자세한 상태: paper/state.json")
 
 
 if __name__ == "__main__":
