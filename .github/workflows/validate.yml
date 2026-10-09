@@ -1,6 +1,11 @@
 # Actions 탭 -> validate -> Run workflow: 혼합 전략 정밀 검증 리포트를 만듭니다.
 name: validate
 on:
+  # Also runs automatically when the validation code changes.
+  push:
+    paths:
+      - "scripts/validate_strategy.py"
+      - "quant/**"
   workflow_dispatch:
     inputs:
       aggr_share:
@@ -15,7 +20,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - run: python scripts/validate_strategy.py --aggr-share ${{ inputs.aggr_share }}
+      - run: python scripts/validate_strategy.py --aggr-share ${{ inputs.aggr_share || '0.5' }}
       - run: cat reports/validation.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
