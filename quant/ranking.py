@@ -27,8 +27,8 @@ class Config:
 
     @property
     def label(self) -> str:
-        p = ",".join(f"{k}={v}" for k, v in self.params.items()
-                     if not isinstance(v, (list, tuple)))
+        p = ",".join(f"{k}={'+'.join(v) if isinstance(v, (list, tuple)) else v}"
+                     for k, v in self.params.items() if k != "parts")
         return f"{self.strategy}({p})"
 
 
@@ -67,15 +67,15 @@ def evaluate(prices: pd.DataFrame, configs: list[Config], split: str,
 
 
 def _robustness(df: pd.DataFrame) -> pd.Series:
-    """Median OOS Sharpe over configs of the same strategy that differ in one param."""
+    """Median OOS Sharpe over configs of the same strategy that differ in exactly one param."""
     out = pd.Series(index=df.index, dtype=float)
     for i, row in df.iterrows():
-        mine = {k: v for k, v in row["_params"].items() if not isinstance(v, (list, tuple))}
+        mine = row["_params"]
         peers = [row["oos_sharpe"]]
         for j, other in df[df["strategy"] == row["strategy"]].iterrows():
             if i == j:
                 continue
-            theirs = {k: v for k, v in other["_params"].items() if not isinstance(v, (list, tuple))}
+            theirs = other["_params"]
             if mine.keys() == theirs.keys() and sum(mine[k] != theirs[k] for k in mine) == 1:
                 peers.append(other["oos_sharpe"])
         out[i] = pd.Series(peers).median()

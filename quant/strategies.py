@@ -32,13 +32,17 @@ def buy_and_hold(prices: pd.DataFrame, asset: str = "SPY") -> pd.DataFrame:
 
 
 def sma_trend(prices: pd.DataFrame, asset: str = "SPY", window: int = 200,
-              safe: str | None = None) -> pd.DataFrame:
-    """Hold `asset` while its close is above its moving average, else `safe` (or cash)."""
+              safe: str | None = None, signal: str | None = None) -> pd.DataFrame:
+    """Hold `asset` while `signal` (default: asset itself) is above its moving
+    average, else `safe` (or cash). Use signal="QQQ" to time a leveraged QQQ ETF
+    on the unleveraged index, which whipsaws less."""
+    signal = signal or asset
     sig = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
-    above = prices[asset] > prices[asset].rolling(window).mean()
+    ma = prices[signal].rolling(window).mean()
+    above = prices[signal] > ma
     sig[asset] = above.astype(float)
     if safe:
-        sig[safe] = (~above).astype(float) * prices[asset].rolling(window).mean().notna()
+        sig[safe] = (~above).astype(float) * ma.notna()
     return _monthly(prices, sig)
 
 
@@ -86,9 +90,22 @@ def rsi2_reversion(prices: pd.DataFrame, asset: str = "SPY", entry: float = 10,
     return w
 
 
+def blend(prices: pd.DataFrame, parts: list, name: str = "") -> pd.DataFrame:
+    """Run several strategies side by side with fixed capital shares.
+
+    parts: [(strategy_name, params, share), ...]; shares should sum to 1.
+    Each sleeve keeps its own rules; the total is their weighted sum.
+    """
+    total = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+    for strat, params, share in parts:
+        total = total.add(REGISTRY[strat](prices, **params) * share, fill_value=0.0)
+    return total
+
+
 REGISTRY: dict[str, Strategy] = {
     "buy_and_hold": buy_and_hold,
     "sma_trend": sma_trend,
     "momentum_rotation": momentum_rotation,
     "rsi2_reversion": rsi2_reversion,
+    "blend": blend,
 }
