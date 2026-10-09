@@ -143,3 +143,20 @@ def test_kiwoom_cash_uses_settled_projection():
                                  "d1_usd_fx_entr": "8500.25", "d2_usd_fx_entr": "",
                                  "won_entr": "+00000000500000"}})
     assert k.cash_usd() == 8500.25
+
+
+def test_targets_match_momentum_blend(close):
+    from quant.strategies import momentum_blend
+    from quant.trader.runner import sleeve_targets
+
+    cfg = TraderConfig()
+    sig = pd.Timestamp("2026-09-30")
+    got = {}
+    for t in sleeve_targets(close, sig, cfg):
+        got[t["symbol"]] = got.get(t["symbol"], 0.0) + t["weight"]
+    px = close.rename(columns={"TQQQ": "QQQ3X", "UPRO": "SPY3X"})
+    want = momentum_blend(px, aggr_share=0.5, lookbacks=[21, 63, 126, 252]).loc[sig]
+    want = {{"QQQ3X": "TQQQ", "SPY3X": "UPRO"}.get(k, k): v for k, v in want.items() if v > 1e-9}
+    assert got == pytest.approx(want)
+    assert cfg.strategy_id == "momentum_blend_multi"
+    assert cfg.strategy_name == "혼합 50/50 멀티기간 모멘텀"

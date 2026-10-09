@@ -48,7 +48,10 @@ DATA_TICKERS = sorted({t for s in SLEEVES for t in s.universe} | {SAFE, BENCHMAR
 @dataclass
 class TraderConfig:
     aggr_share: float = 0.5
-    lookback: int = 63
+    lookback: int = 63                 # used only when lookbacks is empty
+    # Rank on the average of these trailing returns (1/3/6/12 months), the
+    # variant chosen in the strategy-improvement thread (momentum_blend).
+    lookbacks: tuple[int, ...] = (21, 63, 126, 252)
     initial_capital: float = 10_000.0
     cash_buffer: float = 0.02          # keep 2% in cash for fees / price moves
     # Refuse any single order above this. None = current equity, which still
@@ -64,12 +67,18 @@ class TraderConfig:
 
     @property
     def strategy_id(self) -> str:
-        return f"mixed_{round((1 - self.aggr_share) * 100)}_{round(self.aggr_share * 100)}"
+        base = "momentum_blend_multi" if self.lookbacks else "momentum_blend"
+        return base if self.aggr_share == 0.5 else f"{base}_{round(self.aggr_share * 100)}"
 
     @property
     def strategy_name(self) -> str:
-        return (f"혼합 {round((1 - self.aggr_share) * 100)}/"
-                f"{round(self.aggr_share * 100)} 모멘텀")
+        split = f"{round((1 - self.aggr_share) * 100)}/{round(self.aggr_share * 100)}"
+        return f"혼합 {split} {'멀티기간 ' if self.lookbacks else ''}모멘텀"
+
+    def momentum(self, close: pd.DataFrame) -> pd.DataFrame:
+        """Score used for ranking: mean trailing return over `lookbacks`."""
+        windows = self.lookbacks or (self.lookback,)
+        return sum(close.pct_change(lb) for lb in windows) / len(windows)
 
 
 def signal_date(index: pd.DatetimeIndex, today: pd.Timestamp) -> pd.Timestamp | None:
@@ -84,6 +93,7 @@ def sleeve_targets(close: pd.DataFrame, sig: pd.Timestamp, cfg: TraderConfig) ->
     rows = []
     for sl in SLEEVES:
         w = momentum_rotation(px, sl.universe, lookback=cfg.lookback,
+                              lookbacks=list(cfg.lookbacks) or None,
                               top_n=sl.top_n, safe=SAFE).loc[sig]
         for sym, v in w.items():
             if v > 1e-9:
@@ -95,7 +105,7 @@ def sleeve_targets(close: pd.DataFrame, sig: pd.Timestamp, cfg: TraderConfig) ->
 def signal_scores(close: pd.DataFrame, sig: pd.Timestamp, cfg: TraderConfig,
                   targets: list[dict]) -> list[dict]:
     chosen = {(t["sleeve"], t["symbol"]) for t in targets}
-    ret = close.loc[:sig].pct_change(cfg.lookback).loc[sig]
+    ret = cfg.momentum(close.loc[:sig]).loc[sig]
     return [{"symbol": sym, "sleeve": sl.id, "return": round(float(ret[sym]), 4),
              "selected": (sl.id, sym) in chosen}
             for sl in SLEEVES for sym in sl.universe]
@@ -248,7 +258,10 @@ class Runner:
             "strategy": {
                 "id": self.cfg.strategy_id,
                 "name": self.cfg.strategy_name,
-                "description": "안정 바구니는 3개월 수익률 1등, 공격 바구니는 1·2등을 반씩. "
+                "description": "1·3·6·12개월 수익률의 평균으로 순위를 매겨 안정 바구니는 1등, "
+                               "공격 바구니는 1·2등을 반씩 담습니다. 평균이 0 이하면 IEF."
+                               if self.cfg.lookbacks else
+                               "안정 바구니는 3개월 수익률 1등, 공격 바구니는 1·2등을 반씩. "
                                "수익률이 마이너스면 IEF.",
                 "sleeves": [{"id": s.id, "name": s.name, "weight": self.cfg.sleeve_weight(s),
                              "universe": s.universe} for s in SLEEVES],
@@ -268,7 +281,9 @@ class Runner:
             "last_rebalance": meta.get("last_rebalance"),
             "next_rebalance": next_rebalance(pd.Timestamp(now.date())),
             "signal": {"as_of": str(sig.date()) if sig is not None else None,
-                       "lookback_days": self.cfg.lookback, "scores": scores or []},
+                       "lookback_days": max(self.cfg.lookbacks or (self.cfg.lookback,)),
+                       "lookbacks": list(self.cfg.lookbacks or (self.cfg.lookback,)),
+                       "scores": scores or []},
             "alerts": alerts,
         }
         self._write_atomic("state.json", state)
