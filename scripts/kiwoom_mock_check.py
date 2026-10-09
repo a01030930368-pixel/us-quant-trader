@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import requests
@@ -51,22 +52,33 @@ def get_token(appkey: str, secret: str) -> str:
 
 
 def find_exchanges(token: str, path: str, api_id: str) -> None:
+    """Try each exchange code per ticker. Calls are spaced out because Kiwoom
+    rejects bursts of requests (rate limit), which looks like "not found"."""
     tickers = ["SPY", "QQQ", "IWM", "EFA", "GLD", "TLT", "IEF", "TQQQ", "UPRO"]
-    print("\n티커별 거래소 코드:")
+    print("\n티커별 거래소 코드 (호출 간격을 두어 1분 정도 걸립니다):")
     for t in tickers:
-        found = []
+        found, errors = [], []
         for ex in ("ND", "NY", "NA"):
-            r = requests.post(f"{MOCK}{path}",
-                              headers={"Content-Type": "application/json;charset=UTF-8",
-                                       "authorization": f"Bearer {token}", "api-id": api_id},
-                              json={"stex_tp": ex, "stk_cd": t}, timeout=15)
-            try:
-                ok = r.ok and str(r.json().get("return_code")) == "0"
-            except ValueError:
-                ok = False
-            if ok:
+            for attempt in range(3):
+                time.sleep(1.0 + attempt)
+                r = requests.post(f"{MOCK}{path}",
+                                  headers={"Content-Type": "application/json;charset=UTF-8",
+                                           "authorization": f"Bearer {token}", "api-id": api_id},
+                                  json={"stex_tp": ex, "stk_cd": t}, timeout=15)
+                try:
+                    body = r.json()
+                except ValueError:
+                    body = {}
+                msg = str(body.get("return_msg", f"HTTP {r.status_code}"))
+                if r.status_code == 429 or "초과" in msg:
+                    continue  # rate limited: wait longer and retry
+                break
+            if r.ok and str(body.get("return_code")) == "0":
                 found.append(ex)
-        print(f"  {t:5} -> {', '.join(found) if found else '찾지 못함'}")
+            else:
+                errors.append(f"{ex}: {msg[:60]}")
+        line = ", ".join(found) if found else "찾지 못함  (" + " / ".join(errors) + ")"
+        print(f"  {t:5} -> {line}")
     print("\n이 결과를 Claude에게 그대로 붙여 주세요.")
 
 

@@ -64,9 +64,16 @@ def test_stop_file_halts(tmp_path, close):
 
 
 def test_order_cap_blocks(tmp_path, close):
-    r = make_runner(tmp_path, cash=1_000_000)
+    cfg = TraderConfig(state_dir=tmp_path / "paper", max_order_usd=1_000)
+    r = Runner(SimBroker(cfg.state_dir / "sim_account.json", starting_cash=100_000), cfg)
     s = r.run(close=close, now=datetime(2026, 10, 8, tzinfo=timezone.utc))
     assert "한도" in errors(s) and r.broker.positions() == {}
+
+
+def test_default_cap_allows_large_single_position(tmp_path, close):
+    r = make_runner(tmp_path, cash=100_000)
+    s = r.run(close=close, now=datetime(2026, 10, 8, tzinfo=timezone.utc))
+    assert not errors(s) and r.broker.positions()
 
 
 def test_plan_sells_before_buys():
