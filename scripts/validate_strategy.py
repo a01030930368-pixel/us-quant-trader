@@ -162,6 +162,23 @@ def main():
             f"매년 이익의 22%를 세금으로 낸다고 단순 가정(기본공제 250만 원, 손실 이월 미반영): "
             f"연 {pre * 100:.1f}% → 약 연 {post * 100:.1f}%\n"]
 
+    # 7. Shares compared on the full period and since 2015
+    rows = []
+    for sh in (0.0, 0.2, 0.3, 0.5):
+        res = run_backtest(close, blend_weights(close, sh), cost, opens)
+        full, recent = summarize(res.returns), summarize(res.returns.loc["2015":])
+        rows.append({"공격 비중": f"{round(sh * 100)}%", "전체 연수익": full["cagr"],
+                     "전체 최대낙폭": full["mdd"], "2015~ 연수익": recent["cagr"],
+                     "2015~ 최대낙폭": recent["mdd"], "2015~ Sharpe": recent["sharpe"]})
+    res = run_backtest(close, buy_and_hold(close, "SPY"), cost, opens)
+    full, recent = summarize(res.returns), summarize(res.returns.loc["2015":])
+    rows.append({"공격 비중": "SPY 보유", "전체 연수익": full["cagr"], "전체 최대낙폭": full["mdd"],
+                 "2015~ 연수익": recent["cagr"], "2015~ 최대낙폭": recent["mdd"],
+                 "2015~ Sharpe": recent["sharpe"]})
+    t = pd.DataFrame(rows)
+    t["2015~ Sharpe"] = t["2015~ Sharpe"].map(lambda v: f"{v:.2f}")
+    out += ["## 7. 공격 비중별 비교\n", fmt(t), ""]
+
     Path("reports").mkdir(exist_ok=True)
     text = "\n".join(out)
     Path("reports/validation.md").write_text(text, encoding="utf-8")
