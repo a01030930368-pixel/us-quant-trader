@@ -22,14 +22,30 @@ def load_prices(tickers: list[str], start: str, end: str | None = None,
 
     import yfinance as yf
 
-    raw = yf.download(tickers, start=start, end=end, auto_adjust=True,
-                      progress=False, group_by="column")
-    if raw.empty:
-        raise RuntimeError("가격 데이터를 받지 못했습니다. 인터넷 연결과 티커를 확인하세요.")
-    prices = raw[field]
-    if isinstance(prices, pd.Series):
-        prices = prices.to_frame(tickers[0])
-    prices = prices[tickers].dropna(how="all").ffill()
+    def fetch(names: list[str]) -> pd.DataFrame:
+        raw = yf.download(names, start=start, end=end, auto_adjust=True,
+                          progress=False, group_by="column", threads=len(names) > 1)
+        if raw.empty:
+            return pd.DataFrame()
+        out = raw[field]
+        return out.to_frame(names[0]) if isinstance(out, pd.Series) else out
+
+    prices = fetch(tickers).reindex(columns=tickers)
+    # yfinance sometimes drops a ticker (e.g. "database is locked" in its
+    # cache when downloading in parallel); fetch the missing ones again.
+    for _ in range(2):
+        missing = [t for t in tickers if prices[t].isna().all()]
+        if not missing:
+            break
+        for t in missing:
+            again = fetch([t])
+            if t in again:
+                prices = prices.combine_first(again[[t]])[tickers]
+    missing = [t for t in tickers if prices[t].isna().all()]
+    if missing:
+        raise RuntimeError(f"가격 데이터를 받지 못했습니다: {', '.join(missing)}. "
+                           "인터넷 연결과 티커를 확인하세요.")
+    prices = prices.dropna(how="all").ffill()
     prices.to_csv(path)
     return prices
 

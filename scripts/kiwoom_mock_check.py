@@ -50,6 +50,26 @@ def get_token(appkey: str, secret: str) -> str:
     return token
 
 
+def find_exchanges(token: str, path: str, api_id: str) -> None:
+    tickers = ["SPY", "QQQ", "IWM", "EFA", "GLD", "TLT", "IEF", "TQQQ", "UPRO"]
+    print("\n티커별 거래소 코드:")
+    for t in tickers:
+        found = []
+        for ex in ("ND", "NY", "NA"):
+            r = requests.post(f"{MOCK}{path}",
+                              headers={"Content-Type": "application/json;charset=UTF-8",
+                                       "authorization": f"Bearer {token}", "api-id": api_id},
+                              json={"stex_tp": ex, "stk_cd": t}, timeout=15)
+            try:
+                ok = r.ok and str(r.json().get("return_code")) == "0"
+            except ValueError:
+                ok = False
+            if ok:
+                found.append(ex)
+        print(f"  {t:5} -> {', '.join(found) if found else '찾지 못함'}")
+    print("\n이 결과를 Claude에게 그대로 붙여 주세요.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--path", default="/api/us/mrkcond",
@@ -60,6 +80,8 @@ def main() -> None:
                     help="거래소 구분: ND=NASDAQ, NY=NYSE, NA=AMEX")
     ap.add_argument("--body", default=None,
                     help='요청 본문 JSON을 직접 지정 (가이드의 필드명이 다를 때). 예: \'{"stk_cd":"AAPL"}\'')
+    ap.add_argument("--find-exchange", action="store_true",
+                    help="실행기가 쓰는 ETF마다 맞는 거래소 코드(ND/NY/NA)를 찾아 출력")
     args = ap.parse_args()
 
     load_env()
@@ -69,6 +91,9 @@ def main() -> None:
         sys.exit(1)
 
     token = get_token(appkey, secret)
+    if args.find_exchange:
+        find_exchanges(token, args.path, args.api_id)
+        return
     body = json.loads(args.body) if args.body else {"stex_tp": args.exchange, "stk_cd": args.ticker}
     r = requests.post(f"{MOCK}{args.path}",
                       headers={"Content-Type": "application/json;charset=UTF-8",
