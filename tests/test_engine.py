@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import pandas as pd
 
 from quant.backtest import run_backtest
@@ -97,3 +98,48 @@ def test_next_open_execution_lags_one_day(prices):
     nxt = run_backtest(prices, w, cost_bps=0, opens=opens)
     delayed = run_backtest(prices, w.shift(1).fillna(0.0), cost_bps=0)
     assert np.allclose(nxt.returns.values, delayed.returns.values)
+
+
+@pytest.fixture
+def blend_prices():
+    rng = np.random.default_rng(1)
+    idx = pd.bdate_range("2010-01-01", periods=252 * 6)
+    cols = ["SPY", "QQQ", "IWM", "EFA", "GLD", "TLT", "IEF"]
+    rets = rng.normal(0.0003, 0.01, size=(len(idx), len(cols)))
+    px = pd.DataFrame(100 * np.cumprod(1 + rets, axis=0), index=idx, columns=cols)
+    px["QQQ3X"] = 100 * (1 + 3 * px["QQQ"].pct_change().fillna(0)).cumprod()
+    px["SPY3X"] = 100 * (1 + 3 * px["SPY"].pct_change().fillna(0)).cumprod()
+    return px
+
+
+def test_momentum_blend_defaults_match_original_blend(blend_prices):
+    from quant.strategies import AGGR, STABLE, blend, momentum_blend
+    old = blend(blend_prices, [
+        ("momentum_rotation", {"assets": STABLE, "safe": "IEF", "lookback": 63, "top_n": 1}, 0.5),
+        ("momentum_rotation", {"assets": AGGR, "safe": "IEF", "lookback": 63, "top_n": 2}, 0.5),
+    ])
+    pd.testing.assert_frame_equal(momentum_blend(blend_prices), old)
+
+
+@pytest.mark.parametrize("opts", [
+    {"rebalance": "W"},
+    {"lookbacks": [21, 63, 126, 252]},
+    {"trend_window": 200},
+    {"vol_target": 0.3},
+    {"trend_window": 200, "vol_target": 0.3, "safe_filter": True, "rebalance": "W"},
+])
+def test_momentum_blend_options(blend_prices, opts):
+    from quant.strategies import momentum_blend
+    w = momentum_blend(blend_prices, **opts)
+    assert (w.sum(axis=1) <= 1 + 1e-9).all()
+    assert (w >= -1e-12).all().all()
+    bumped = blend_prices.copy()
+    bumped.iloc[-10:] *= 2
+    pd.testing.assert_frame_equal(w.iloc[:-30], momentum_blend(bumped, **opts).iloc[:-30])
+
+
+def test_vol_target_lowers_leverage(blend_prices):
+    from quant.strategies import momentum_blend
+    plain = momentum_blend(blend_prices)[["QQQ3X", "SPY3X"]].sum(axis=1)
+    capped = momentum_blend(blend_prices, vol_target=0.2)[["QQQ3X", "SPY3X"]].sum(axis=1)
+    assert (capped <= plain + 1e-9).all() and capped.mean() < plain.mean()
