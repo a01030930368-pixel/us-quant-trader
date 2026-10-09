@@ -90,3 +90,15 @@
 
 - `equity` = 현금 + 보유 종목 평가금액 (그날 종가 기준)
 - `benchmark_close`는 `state.benchmark`(SPY)의 그날 종가. 대시보드가 첫날 대비로 바꿔 비교합니다.
+
+## agent.json (선택)
+
+자동 실행 도우미(`scripts/mintory_agent.py`)가 쓰는 상태 파일입니다. 있으면 대시보드 상단에 "다음 자동 실행 10/12 23:45 · 마지막 실행 OK"처럼 표시합니다.
+
+```json
+{"agent": "mintory_agent", "next_run": "2026-10-12T23:45:00+09:00", "last_run": "2026-10-09T23:45:02+09:00", "last_result": "ok", "checked_at": "2026-10-10T08:00:00+09:00"}
+```
+
+- `last_result`: `ok`, 실패하면 `error (exit N)`. 실패면 빨간색으로 표시합니다.
+- 대시보드는 실제 기록(`paper/`)을 볼 때 5분마다 화면을 새로 읽습니다.
+

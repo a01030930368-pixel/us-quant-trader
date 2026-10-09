@@ -455,6 +455,16 @@ tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
     if (a.level === "warn" || a.level === "error") badges.push('<span class="badge stale" title="' + esc(a.message) + '">' + (a.level === "error" ? "오류 · " : "주의 · ") + esc(a.message) + "</span>");
   });
   badges.push('<span class="badge"><span class="dot"></span>' + esc(MODES[S.mode] || S.mode || "모의투자") + "</span>");
+  var AG = DATA.agent;
+  if (AG && (AG.next_run || AG.last_run)) {
+    var mdhm = function (iso) { var m = /^\d{4}-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso || ""); return m ? (+m[1]) + "/" + (+m[2]) + " " + m[3] + ":" + m[4] : ""; };
+    var failed = AG.last_result && AG.last_result !== "ok";
+    var parts = [];
+    if (AG.next_run) parts.push("다음 자동 실행 " + mdhm(AG.next_run));
+    if (AG.last_run) parts.push("마지막 실행 " + (failed ? "실패" : "OK"));
+    badges.push('<span class="badge' + (failed ? " stale" : "") + '" title="' + esc((AG.last_run ? "마지막 실행 " + mdhm(AG.last_run) + " · " + (AG.last_result || "") : "") + (AG.checked_at ? " · 확인 " + mdhm(AG.checked_at) : "")) + '">' +
+      '<span class="dot"' + (failed ? ' style="background:var(--up);box-shadow:0 0 0 3px var(--up-bg)"' : "") + "></span>" + esc(parts.join(" · ")) + "</span>");
+  }
   if (S.updated_at) {
     var age = days(parseDate(S.updated_at), today());
     badges.push('<span class="badge" title="기록 폴더: ' + esc(META.dir || "paper/") + '">' + ymd(S.updated_at) + " " + hm(S.updated_at) + " 업데이트</span>");
@@ -741,5 +751,8 @@ tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
     });
   });
   drawTrades();
+
+  // 실제 기록을 보는 중이면 몇 분마다 새로 읽는다. 자동 실행이 HTML을 다시 만들면 바로 반영된다.
+  if (META.source === "paper") setTimeout(function () { location.reload(); }, 5 * 60 * 1000);
 })();
 </script>
