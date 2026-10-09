@@ -235,7 +235,9 @@ class Runner:
                         rec["message"] = res.get("msg", "")
                         alerts.append({"level": "warn", "message":
                                        f"{o['symbol']} {'매수' if o['side'] == 'buy' else '매도'} "
-                                       f"주문이 거부되었습니다 ({res.get('msg', '')})"})
+                                       + ("주문 접수를 확인하지 못했습니다"
+                                          if rec["status"] == "pending" else "주문이 거부되었습니다")
+                                       + f" ({res.get('msg', '')})"})
                     self._append("trades.jsonl", rec)
                 if all_ok:
                     meta["last_signal"] = str(sig.date())

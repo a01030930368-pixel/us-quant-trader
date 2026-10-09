@@ -192,3 +192,33 @@ def test_kiwoom_retries_when_server_busy(monkeypatch):
     k = KiwoomBroker("k", "s")
     k._token, k._token_exp = "t", 1e12
     assert k.positions() == {} and not replies
+
+
+def test_kiwoom_retries_read_timeout_but_not_orders(monkeypatch):
+    import quant.trader.brokers as b
+
+    class Resp:
+        status_code, ok, content = 200, True, b"x"
+
+        def json(self):
+            return {"return_code": 0, "result_list": []}
+
+    calls = []
+
+    def post(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise b.requests.ReadTimeout("Read timed out")
+        return Resp()
+
+    monkeypatch.setattr(b.requests, "post", post)
+    monkeypatch.setattr(b.time, "sleep", lambda s: None)
+    k = KiwoomBroker("k", "s")
+    k._token, k._token_exp = "t", 1e12
+    assert k.positions() == {} and len(calls) == 2
+
+    calls.clear()
+    monkeypatch.setattr(b.requests, "post",
+                        lambda *a, **kw: (_ for _ in ()).throw(b.requests.ReadTimeout("slow")))
+    res = k.place_order("SPY", "buy", 1, 500.0)
+    assert not res["ok"] and res["status"] == "pending" and "응답 없음" in res["msg"]

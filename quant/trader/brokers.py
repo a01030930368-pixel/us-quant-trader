@@ -118,11 +118,19 @@ class KiwoomBroker:
             if wait > 0:
                 time.sleep(wait)
             self._last_call = time.time()
-            r = requests.post(f"{self.base}{path}",
-                              headers={"Content-Type": "application/json;charset=UTF-8",
-                                       "authorization": f"Bearer {self.token()}",
-                                       "api-id": api_id},
-                              json=body, timeout=15)
+            try:
+                r = requests.post(f"{self.base}{path}",
+                                  headers={"Content-Type": "application/json;charset=UTF-8",
+                                           "authorization": f"Bearer {self.token()}",
+                                           "api-id": api_id},
+                                  json=body, timeout=30)
+            except (requests.Timeout, requests.ConnectionError) as e:
+                # The mock server sometimes stalls. Orders pass retries=0, so an
+                # order that may have gone through is never sent twice.
+                if attempt < retries:
+                    time.sleep(10 * (attempt + 1))
+                    continue
+                raise RuntimeError(f"{api_id} 응답 없음 (키움 서버): {e}") from e
             data = r.json() if r.content else {}
             if r.ok and str(data.get("return_code", "0")) == "0":
                 return data
@@ -190,7 +198,13 @@ class KiwoomBroker:
         try:
             data = self.call("/api/us/ordr", api_id, body, retries=0)
         except (RuntimeError, requests.RequestException, ValueError) as e:
-            return {"ok": False, "msg": str(e)[:300]}
+            msg = str(e)[:300]
+            if "응답 없음" in msg:
+                # No reply: the order may still have been accepted. Not retried;
+                # the next run re-plans from the actual balance.
+                return {"ok": False, "status": "pending",
+                        "msg": "키움 응답 없음 - 접수 여부 불확실, 다음 실행 때 잔고로 확인"}
+            return {"ok": False, "msg": msg}
         return {"ok": True, "status": "pending", "order_no": data.get("ord_no"),
                 "fill_price": limit_price or ref_price, "fee": 0.0,
                 "msg": data.get("return_msg", "")}
