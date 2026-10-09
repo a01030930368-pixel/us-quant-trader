@@ -20,8 +20,8 @@
 {
   "schema_version": 1,
   "strategy": {
-    "id": "mixed_50_50",
-    "name": "혼합 50/50 모멘텀",
+    "id": "momentum_blend_multi",
+    "name": "혼합 50/50 멀티기간 모멘텀",
     "description": "한 줄 설명 (선택)",
     "sleeves": [
       {"id": "stable", "name": "안정 바구니", "weight": 0.5, "universe": ["SPY", "QQQ", "IWM", "EFA", "GLD"]},
@@ -47,7 +47,8 @@
   "next_rebalance": {"signal_date": "2026-10-30", "order_date": "2026-11-02"},
   "signal": {
     "as_of": "2026-09-30",
-    "lookback_days": 63,
+    "lookback_days": 252,
+    "lookbacks": [21, 63, 126, 252],
     "scores": [
       {"symbol": "SPY", "sleeve": "stable", "return": 0.0663, "selected": true}
     ]
@@ -67,7 +68,8 @@
 | `positions[].sleeve` | | 한 종목이 두 바구니에 걸치면 `targets`를 기준으로 표시하므로 생략 가능 |
 | `targets` | | 지금 목표 비중. 같은 종목이 두 바구니에 있으면 두 줄 |
 | `next_rebalance` | | `signal_date` = 신호 계산일(월말 장 마감), `order_date` = 주문일 |
-| `signal.scores` | | 바구니별 후보의 최근 수익률과 선택 여부 |
+| `signal.scores` | | 바구니별 후보의 점수(`return`)와 선택 여부. `lookbacks`가 있으면 그 기간들 수익률의 평균(평균 모멘텀) |
+| `signal.lookbacks` | | 점수에 쓴 기간(거래일). 없으면 `lookback_days` 한 기간 수익률로 표시 |
 | `alerts` | | `level`: `info` · `warn` · `error` |
 
 ## trades.jsonl (한 줄 = 주문 하나)

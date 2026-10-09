@@ -667,7 +667,12 @@ tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
     var maxV = Math.max(0.01, Math.max.apply(null, sig.scores.map(function (sc) { return sc.return; })));
     var minV = Math.min(0, Math.min.apply(null, sig.scores.map(function (sc) { return sc.return; })));
     var span = maxV - minV, zero = -minV / span * 100;
-    var h = '<div class="signal"><div class="signal-head">현재 보유 신호 · ' + ymd(sig.as_of) + " 기준 최근 " + (sig.lookback_days ? Math.round(sig.lookback_days / 21) + "개월 " : "") + "수익률" +
+    // lookbacks가 있으면 여러 기간 수익률의 평균(평균 모멘텀), 없으면 한 기간 수익률
+    var months = function (d) { return Math.max(1, Math.round(d / 21)); };
+    var basis = sig.lookbacks && sig.lookbacks.length > 1
+      ? "평균 모멘텀(" + sig.lookbacks.map(months).join("·") + "개월 수익률 평균)"
+      : "최근 " + (sig.lookback_days ? months(sig.lookback_days) + "개월 " : "") + "수익률";
+    var h = '<div class="signal"><div class="signal-head">현재 보유 신호 · ' + ymd(sig.as_of) + " 기준 " + basis +
       (strat.safe_asset ? " · 마이너스면 " + esc(strat.safe_asset) : "") + "</div>";
     (strat.sleeves || Object.keys(groups).map(function (k) { return { id: k, name: k }; })).forEach(function (sl) {
       var list = (groups[sl.id] || []).slice().sort(function (a, b) { return b.return - a.return; });

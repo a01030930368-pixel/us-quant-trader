@@ -20,7 +20,7 @@ KST = timezone(timedelta(hours=9))
 STABLE = ["SPY", "QQQ", "IWM", "EFA", "GLD"]
 AGGRESSIVE = ["TQQQ", "UPRO", "GLD", "TLT"]
 SAFE = "IEF"
-LOOKBACK = 63
+LOOKBACKS = [21, 63, 126, 252]  # 1·3·6·12개월
 FEE = 0.0025  # 키움 해외주식 온라인 수수료 0.25% 가정
 
 # 연 기대수익, 연 변동성, 시작 가격
@@ -40,7 +40,7 @@ def business_days(start: date, end: date) -> list[date]:
     return days
 
 
-def simulate_prices(days: list[date], seed: int = 5) -> dict[str, list[float]]:
+def simulate_prices(days: list[date], seed: int = 9) -> dict[str, list[float]]:
     rng = random.Random(seed)
     prices = {s: [p[2]] for s, p in PARAMS.items()}
     for _ in days[1:]:
@@ -59,7 +59,7 @@ def month_ends(days: list[date]) -> set[int]:
 
 
 def signal(prices, i):
-    ret = {s: prices[s][i] / prices[s][i - LOOKBACK] - 1 for s in PARAMS}
+    ret = {s: sum(prices[s][i] / prices[s][i - lb] - 1 for lb in LOOKBACKS) / len(LOOKBACKS) for s in PARAMS}
     targets: dict[str, dict] = {}
 
     def add(sym, w, sleeve):
@@ -82,7 +82,7 @@ def signal(prices, i):
 
 
 def main() -> None:
-    days = business_days(date(2025, 12, 15), date(2026, 10, 8))
+    days = business_days(date(2025, 3, 3), date(2026, 10, 8))
     prices = simulate_prices(days)
     start_i = next(i for i, d in enumerate(days) if d >= date(2026, 4, 1))
     ends = month_ends(days)
@@ -155,9 +155,9 @@ def main() -> None:
     state = {
         "schema_version": 1,
         "strategy": {
-            "id": "mixed_50_50",
-            "name": "혼합 50/50 모멘텀",
-            "description": "안정 바구니 50%는 3개월 수익률 1등, 공격 바구니 50%는 1·2등을 반씩. 수익률이 마이너스면 IEF.",
+            "id": "momentum_blend_multi",
+            "name": "혼합 50/50 멀티기간 모멘텀",
+            "description": "안정 바구니 50%는 평균 모멘텀(1·3·6·12개월 수익률 평균) 1등, 공격 바구니 50%는 1·2등을 반씩. 마이너스면 IEF.",
             "sleeves": [
                 {"id": "stable", "name": "안정 바구니", "weight": 0.5, "universe": STABLE},
                 {"id": "aggressive", "name": "공격 바구니", "weight": 0.5, "universe": AGGRESSIVE},
@@ -180,7 +180,7 @@ def main() -> None:
         "last_rebalance": last_rebalance.isoformat(),
         "next_rebalance": {"signal_date": oct_last.isoformat(), "order_date": "2026-11-02"},
         "signal": {"as_of": signal_date.isoformat(),
-                   "lookback_days": LOOKBACK, "scores": scores},
+                   "lookback_days": max(LOOKBACKS), "lookbacks": LOOKBACKS, "scores": scores},
         "alerts": [
             {"level": "info", "message": "샘플 데이터입니다. 실제 실행기가 paper/ 폴더에 기록을 남기면 그 값으로 바뀝니다."},
         ],

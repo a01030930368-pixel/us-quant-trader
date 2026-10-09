@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "strategy": {
-    "id": "mixed_50_50",
-    "name": "혼합 50/50 모멘텀",
-    "description": "안정 바구니 50%는 3개월 수익률 1등, 공격 바구니 50%는 1·2등을 반씩. 수익률이 마이너스면 IEF.",
+    "id": "momentum_blend_multi",
+    "name": "혼합 50/50 멀티기간 모멘텀",
+    "description": "안정 바구니 50%는 평균 모멘텀(1·3·6·12개월 수익률 평균) 1등, 공격 바구니 50%는 1·2등을 반씩. 마이너스면 IEF.",
     "sleeves": [
       {
         "id": "stable",
@@ -37,33 +37,33 @@
   "started_at": "2026-04-01",
   "initial_capital": 10000.0,
   "updated_at": "2026-10-08T06:10:00+09:00",
-  "cash": 122.6,
+  "cash": 475.97,
   "positions": [
     {
-      "symbol": "SPY",
-      "qty": 10,
-      "avg_price": 530.33,
-      "last_price": 520.96,
+      "symbol": "QQQ",
+      "qty": 8,
+      "avg_price": 617.66,
+      "last_price": 616.45,
       "sleeve": "stable"
     },
     {
-      "symbol": "UPRO",
-      "qty": 34,
-      "avg_price": 66.67,
-      "last_price": 79.43,
+      "symbol": "TQQQ",
+      "qty": 21,
+      "avg_price": 95.33,
+      "last_price": 134.79,
       "sleeve": "aggressive"
     },
     {
-      "symbol": "TQQQ",
-      "qty": 31,
-      "avg_price": 72.47,
-      "last_price": 82.02,
+      "symbol": "UPRO",
+      "qty": 20,
+      "avg_price": 99.24,
+      "last_price": 135.51,
       "sleeve": "aggressive"
     }
   ],
   "targets": [
     {
-      "symbol": "SPY",
+      "symbol": "QQQ",
       "weight": 0.5,
       "sleeve": "stable"
     },
@@ -85,60 +85,66 @@
   },
   "signal": {
     "as_of": "2026-09-30",
-    "lookback_days": 63,
+    "lookback_days": 252,
+    "lookbacks": [
+      21,
+      63,
+      126,
+      252
+    ],
     "scores": [
-      {
-        "symbol": "SPY",
-        "sleeve": "stable",
-        "return": 0.0663,
-        "selected": true
-      },
       {
         "symbol": "QQQ",
         "sleeve": "stable",
-        "return": 0.0639,
+        "return": 0.14,
+        "selected": true
+      },
+      {
+        "symbol": "GLD",
+        "sleeve": "stable",
+        "return": 0.0992,
+        "selected": false
+      },
+      {
+        "symbol": "SPY",
+        "sleeve": "stable",
+        "return": 0.0139,
         "selected": false
       },
       {
         "symbol": "IWM",
         "sleeve": "stable",
-        "return": 0.0287,
+        "return": -0.0305,
         "selected": false
       },
       {
         "symbol": "EFA",
         "sleeve": "stable",
-        "return": 0.0015,
-        "selected": false
-      },
-      {
-        "symbol": "GLD",
-        "sleeve": "stable",
-        "return": -0.029,
+        "return": -0.0484,
         "selected": false
       },
       {
         "symbol": "TQQQ",
         "sleeve": "aggressive",
-        "return": 0.4945,
+        "return": 0.4632,
         "selected": true
       },
       {
         "symbol": "UPRO",
         "sleeve": "aggressive",
-        "return": 0.439,
+        "return": 0.2801,
         "selected": true
-      },
-      {
-        "symbol": "TLT",
-        "sleeve": "aggressive",
-        "return": 0.0054,
-        "selected": false
       },
       {
         "symbol": "GLD",
         "sleeve": "aggressive",
-        "return": -0.029,
+        "return": 0.0992,
+        "selected": false
+      },
+      {
+        "symbol": "TLT",
+        "sleeve": "aggressive",
+        "return": 0.096,
         "selected": false
       }
     ]
