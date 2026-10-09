@@ -192,7 +192,13 @@ class Runner:
         for t in targets:
             weights[t["symbol"]] = weights.get(t["symbol"], 0.0) + t["weight"]
 
-        positions, cash = self.broker.positions(), self.broker.cash_usd()
+        try:
+            positions, cash = self.broker.positions(), self.broker.cash_usd()
+        except Exception as e:  # noqa: BLE001 - report instead of crashing
+            alerts.append({"level": "error", "message":
+                           f"계좌 조회에 실패해 매매하지 않았습니다: {str(e)[:200]}"})
+            return self._state(now, meta, alerts=alerts, positions={}, cash=None,
+                               prices=prices)
         meta.setdefault("started_at", str(today.date()))
         meta.setdefault("initial_capital", cash + sum(p["qty"] * prices.get(s, 0.0)
                                                       for s, p in positions.items()))
@@ -229,7 +235,9 @@ class Runner:
                         rec["message"] = res.get("msg", "")
                         alerts.append({"level": "warn", "message":
                                        f"{o['symbol']} {'매수' if o['side'] == 'buy' else '매도'} "
-                                       f"주문이 거부되었습니다 ({res.get('msg', '')})"})
+                                       + ("주문 접수를 확인하지 못했습니다"
+                                          if rec["status"] == "pending" else "주문이 거부되었습니다")
+                                       + f" ({res.get('msg', '')})"})
                     self._append("trades.jsonl", rec)
                 if all_ok:
                     meta["last_signal"] = str(sig.date())

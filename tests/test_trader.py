@@ -160,3 +160,65 @@ def test_targets_match_momentum_blend(close):
     assert got == pytest.approx(want)
     assert cfg.strategy_id == "momentum_blend_multi"
     assert cfg.strategy_name == "혼합 50/50 멀티기간 모멘텀"
+
+
+class FailingBroker(SimBroker):
+    def positions(self):
+        raise RuntimeError("ust21070 실패 (HTTP 200): RC9002 모의투자 서비스가 지연되고 있습니다")
+
+
+def test_account_read_failure_is_reported_not_raised(tmp_path, close):
+    cfg = TraderConfig(state_dir=tmp_path / "paper")
+    r = Runner(FailingBroker(cfg.state_dir / "sim_account.json"), cfg)
+    s = r.run(close=close, now=datetime(2026, 10, 8, tzinfo=timezone.utc))
+    assert "계좌 조회" in errors(s) and "RC9002" in errors(s)
+    assert (r.dir / "state.json").exists() and trades(r) == []
+
+
+def test_kiwoom_retries_when_server_busy(monkeypatch):
+    import quant.trader.brokers as b
+
+    class Resp:
+        def __init__(self, body):
+            self.body, self.status_code, self.ok, self.content = body, 200, True, b"x"
+
+        def json(self):
+            return self.body
+
+    replies = [Resp({"return_code": 20, "return_msg": "[2000](RC9002:모의투자 서비스가 지연되고 있습니다. 잠시후 재시도 바랍니다.)"}),
+               Resp({"return_code": 0, "result_list": []})]
+    monkeypatch.setattr(b.requests, "post", lambda *a, **k: replies.pop(0))
+    monkeypatch.setattr(b.time, "sleep", lambda s: None)
+    k = KiwoomBroker("k", "s")
+    k._token, k._token_exp = "t", 1e12
+    assert k.positions() == {} and not replies
+
+
+def test_kiwoom_retries_read_timeout_but_not_orders(monkeypatch):
+    import quant.trader.brokers as b
+
+    class Resp:
+        status_code, ok, content = 200, True, b"x"
+
+        def json(self):
+            return {"return_code": 0, "result_list": []}
+
+    calls = []
+
+    def post(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise b.requests.ReadTimeout("Read timed out")
+        return Resp()
+
+    monkeypatch.setattr(b.requests, "post", post)
+    monkeypatch.setattr(b.time, "sleep", lambda s: None)
+    k = KiwoomBroker("k", "s")
+    k._token, k._token_exp = "t", 1e12
+    assert k.positions() == {} and len(calls) == 2
+
+    calls.clear()
+    monkeypatch.setattr(b.requests, "post",
+                        lambda *a, **kw: (_ for _ in ()).throw(b.requests.ReadTimeout("slow")))
+    res = k.place_order("SPY", "buy", 1, 500.0)
+    assert not res["ok"] and res["status"] == "pending" and "응답 없음" in res["msg"]
