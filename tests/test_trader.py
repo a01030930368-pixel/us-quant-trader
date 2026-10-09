@@ -224,3 +224,27 @@ def test_kiwoom_retries_read_timeout_but_not_orders(monkeypatch):
                         lambda *a, **kw: (_ for _ in ()).throw(b.requests.ReadTimeout("slow")))
     res = k.place_order("SPY", "buy", 1, 500.0)
     assert not res["ok"] and res["status"] == "pending" and "응답 없음" in res["msg"]
+
+
+def test_run_trader_refreshes_dashboard(monkeypatch, tmp_path):
+    from dashboard import build
+    from scripts import run_trader
+
+    seen = []
+    monkeypatch.setattr(build, "main", lambda argv: seen.append(argv) or 0)
+    run_trader.build_dashboard(tmp_path)
+    run_trader.build_dashboard(tmp_path, open_browser=True)
+    assert seen == [["--data", str(tmp_path), "--no-open"], ["--data", str(tmp_path)]]
+
+
+def test_dashboard_reads_runner_output(tmp_path, close):
+    from dashboard import build
+
+    r = make_runner(tmp_path)
+    r.run(close=close, now=datetime(2026, 10, 8, tzinfo=timezone.utc))
+    data = build.load(r.dir)
+    assert data["state"]["strategy"]["id"] == "momentum_blend_multi"
+    assert data["trades"] and data["equity"]
+    out = tmp_path / "dash.html"
+    assert build.main(["--data", str(r.dir), "--out", str(out), "--no-open"]) == 0
+    assert "momentum_blend_multi" in out.read_text(encoding="utf-8")
