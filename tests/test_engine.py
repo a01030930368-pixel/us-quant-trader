@@ -73,3 +73,12 @@ def test_sma_trend_uses_signal_asset(prices):
     above = (prices["SPY"] > prices["SPY"].rolling(200).mean()).astype(float)
     month_end = w.index[w.index.to_series().groupby(w.index.to_period("M")).transform("max") == w.index]
     assert (w.loc[month_end[-12:], "QQQ"].values == above.loc[month_end[-12:]].values).all()
+
+
+def test_blend_is_weighted_sum(prices):
+    from quant.strategies import blend
+    a = buy_and_hold(prices, "SPY")
+    b = buy_and_hold(prices, "GLD")
+    w = blend(prices, [("buy_and_hold", {"asset": "SPY"}, 0.7),
+                       ("buy_and_hold", {"asset": "GLD"}, 0.3)])
+    pd.testing.assert_frame_equal(w, a * 0.7 + b * 0.3)

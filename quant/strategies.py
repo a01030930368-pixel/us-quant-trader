@@ -90,9 +90,22 @@ def rsi2_reversion(prices: pd.DataFrame, asset: str = "SPY", entry: float = 10,
     return w
 
 
+def blend(prices: pd.DataFrame, parts: list, name: str = "") -> pd.DataFrame:
+    """Run several strategies side by side with fixed capital shares.
+
+    parts: [(strategy_name, params, share), ...]; shares should sum to 1.
+    Each sleeve keeps its own rules; the total is their weighted sum.
+    """
+    total = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+    for strat, params, share in parts:
+        total = total.add(REGISTRY[strat](prices, **params) * share, fill_value=0.0)
+    return total
+
+
 REGISTRY: dict[str, Strategy] = {
     "buy_and_hold": buy_and_hold,
     "sma_trend": sma_trend,
     "momentum_rotation": momentum_rotation,
     "rsi2_reversion": rsi2_reversion,
+    "blend": blend,
 }

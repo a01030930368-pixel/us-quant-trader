@@ -28,7 +28,7 @@ class Config:
     @property
     def label(self) -> str:
         p = ",".join(f"{k}={'+'.join(v) if isinstance(v, (list, tuple)) else v}"
-                     for k, v in self.params.items())
+                     for k, v in self.params.items() if k != "parts")
         return f"{self.strategy}({p})"
 
 

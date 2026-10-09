@@ -38,6 +38,14 @@ def candidate_configs() -> list[Config]:
     configs += expand_grid("momentum_rotation",
                            {"assets": ["QQQ3X", "SPY3X", "GLD", "TLT"], "safe": "IEF"},
                            {"lookback": [63, 126, 189, 252], "top_n": [1, 2]})
+    # Mixed: stable sleeve + aggressive sleeve at fixed shares.
+    stable = ("momentum_rotation", {"assets": RISK, "safe": "IEF", "lookback": 63, "top_n": 1})
+    aggressive = ("momentum_rotation", {"assets": ["QQQ3X", "SPY3X", "GLD", "TLT"],
+                                        "safe": "IEF", "lookback": 63, "top_n": 2})
+    for share in [0.1, 0.2, 0.3, 0.4, 0.5]:
+        configs.append(Config("blend", {
+            "name": f"stable{round((1 - share) * 100)}_aggr{round(share * 100)}",
+            "parts": [(*stable, 1 - share), (*aggressive, share)]}))
     configs += expand_grid("rsi2_reversion", {"asset": "SPY"},
                            {"entry": [5, 10, 15], "exit_": [60, 70, 80]})
     return configs
@@ -84,12 +92,17 @@ def main() -> None:
     body = ("## 비교 기준 (단순 보유)\n\n" + bench.to_markdown(index=False)
             + "\n\n## 공격형 (3배 레버리지, MDD 필터와 무관하게 점수순)\n\n"
             + aggressive.to_markdown(index=False)
+            + "\n\n## 혼합형 (안정 모멘텀 + 3배 모멘텀, 비중별)\n\n"
+            + view[table["strategy"] == "blend"].to_markdown(index=False)
             + "\n\n## 전체 순위\n\n" + view.to_markdown(index=False))
     (out / "ranking.md").write_text(header + body, encoding="utf-8")
     print("비교 기준:")
     print(bench.to_string(index=False))
     print("\n공격형 상위 10개:")
     print(aggressive.head(10).to_string(index=False))
+    mixed = view[table["strategy"] == "blend"]
+    print("\n혼합형:")
+    print(mixed.to_string(index=False))
     print("\n상위 15개:")
     print(view.head(15).to_string(index=False))
     print(f"\n전체 결과: {out / 'ranking.md'}")
