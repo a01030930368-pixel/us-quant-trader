@@ -33,7 +33,7 @@ START = "2015-01-01"
 COST = 15.0
 LB = [21, 63, 126, 252]
 SECTORS = ["XLK", "XLV", "XLP", "XLE", "XLF", "XLU", "EEM"]
-EXTRA = ["EEM", "AGG", "QLD", "SSO"] + SECTORS
+EXTRA = ["AGG", "QLD", "SSO"] + SECTORS
 BASE = {"lookbacks": LB}  # the strategy now in paper trading
 
 # name -> (strategy, params). All default to the 50/50 multi-window blend.
@@ -69,7 +69,7 @@ def beats(s: dict, spy: dict) -> str:
 
 
 def main():
-    tickers = UNIVERSE + [t for t in EXTRA if t not in UNIVERSE]
+    tickers = list(dict.fromkeys(UNIVERSE + EXTRA))  # no duplicate columns
     close = load_prices(tickers, "2007-01-01").dropna()
     opens = load_prices(tickers, "2007-01-01", field="Open").reindex(close.index)
     for lev, base in {"SPY3X": "SPY", "QQQ3X": "QQQ"}.items():
