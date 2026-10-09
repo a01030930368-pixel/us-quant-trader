@@ -32,13 +32,17 @@ def buy_and_hold(prices: pd.DataFrame, asset: str = "SPY") -> pd.DataFrame:
 
 
 def sma_trend(prices: pd.DataFrame, asset: str = "SPY", window: int = 200,
-              safe: str | None = None) -> pd.DataFrame:
-    """Hold `asset` while its close is above its moving average, else `safe` (or cash)."""
+              safe: str | None = None, signal: str | None = None) -> pd.DataFrame:
+    """Hold `asset` while `signal` (default: asset itself) is above its moving
+    average, else `safe` (or cash). Use signal="QQQ" to time a leveraged QQQ ETF
+    on the unleveraged index, which whipsaws less."""
+    signal = signal or asset
     sig = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
-    above = prices[asset] > prices[asset].rolling(window).mean()
+    ma = prices[signal].rolling(window).mean()
+    above = prices[signal] > ma
     sig[asset] = above.astype(float)
     if safe:
-        sig[safe] = (~above).astype(float) * prices[asset].rolling(window).mean().notna()
+        sig[safe] = (~above).astype(float) * ma.notna()
     return _monthly(prices, sig)
 
 

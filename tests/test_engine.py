@@ -51,3 +51,25 @@ def test_ranking_orders_by_score(prices):
     assert len(table) == 4
     assert table["score"].is_monotonic_decreasing
     assert {"is_sharpe", "oos_sharpe", "robustness"} <= set(table.columns)
+
+
+def test_leveraged_series_triples_daily_moves(prices):
+    from quant.data import add_leveraged
+    out = add_leveraged(prices, "SPY", "SPY3X", leverage=3.0, annual_cost=0.0)
+    r = out.pct_change().dropna()
+    assert np.allclose(r["SPY3X"], 3 * r["SPY"])
+
+
+def test_monthly_metrics_present(prices):
+    from quant.metrics import summarize
+    res = run_backtest(prices, buy_and_hold(prices, "SPY"), cost_bps=0)
+    m = summarize(res.returns)
+    assert 0 <= m["month_win_rate"] <= 1
+    assert m["worst_month"] <= m["month_avg"]
+
+
+def test_sma_trend_uses_signal_asset(prices):
+    w = sma_trend(prices, "QQQ", 200, safe="IEF", signal="SPY")
+    above = (prices["SPY"] > prices["SPY"].rolling(200).mean()).astype(float)
+    month_end = w.index[w.index.to_series().groupby(w.index.to_period("M")).transform("max") == w.index]
+    assert (w.loc[month_end[-12:], "QQQ"].values == above.loc[month_end[-12:]].values).all()

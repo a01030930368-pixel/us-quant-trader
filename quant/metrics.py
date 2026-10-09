@@ -42,6 +42,10 @@ def calmar(returns: pd.Series) -> float:
     return cagr(returns) / mdd if mdd > 0 else 0.0
 
 
+def monthly_returns(returns: pd.Series) -> pd.Series:
+    return (1 + returns).groupby(returns.index.to_period("M")).prod() - 1
+
+
 def summarize(returns: pd.Series, turnover: pd.Series | None = None,
               n_trades: int | None = None) -> dict:
     out = {
@@ -52,6 +56,11 @@ def summarize(returns: pd.Series, turnover: pd.Series | None = None,
         "mdd": max_drawdown(returns),
         "calmar": calmar(returns),
     }
+    if isinstance(returns.index, pd.DatetimeIndex) and len(returns):
+        m = monthly_returns(returns)
+        out["month_avg"] = float(m.mean())
+        out["month_win_rate"] = float((m > 0).mean())
+        out["worst_month"] = float(m.min())
     if turnover is not None:
         years = max(len(turnover) / TRADING_DAYS, 1e-9)
         out["turnover_per_year"] = float(turnover.sum() / years)

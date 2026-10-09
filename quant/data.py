@@ -29,3 +29,17 @@ def load_prices(tickers: list[str], start: str, end: str | None = None,
     prices = prices[tickers].dropna(how="all").ffill()
     prices.to_csv(path)
     return prices
+
+
+def add_leveraged(prices: pd.DataFrame, base: str, name: str, leverage: float = 3.0,
+                  annual_cost: float = 0.03) -> pd.DataFrame:
+    """Add a simulated daily-rebalanced leveraged ETF built from `base`.
+
+    Real 3x ETFs (TQQQ, UPRO) only exist from 2010, so simulating them lets the
+    backtest include 2008. annual_cost approximates the expense ratio plus the
+    financing cost of the borrowed exposure.
+    """
+    daily = prices[base].pct_change().fillna(0.0) * leverage - annual_cost / 252
+    out = prices.copy()
+    out[name] = 100 * (1 + daily).cumprod()
+    return out
