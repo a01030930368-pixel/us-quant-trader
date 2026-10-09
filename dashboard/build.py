@@ -47,11 +47,19 @@ def load(data_dir: Path) -> dict:
     if version > SUPPORTED_SCHEMA:
         print(f"[경고] 기록 형식 버전 {version}은 이 대시보드(버전 {SUPPORTED_SCHEMA})보다 새롭습니다. "
               "일부 항목이 안 보일 수 있어요.", file=sys.stderr)
-    return {
+    data = {
         "state": state,
         "trades": read_jsonl(data_dir / "trades.jsonl"),
         "equity": read_jsonl(data_dir / "equity.jsonl"),
     }
+    # 자동 실행 도우미(mintory_agent)가 남기는 상태. 없거나 깨져 있으면 표시하지 않는다.
+    agent_path = data_dir / "agent.json"
+    if agent_path.exists():
+        try:
+            data["agent"] = json.loads(agent_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            print(f"[경고] {agent_path.name} 을 읽지 못해 자동 실행 상태는 건너뜁니다.", file=sys.stderr)
+    return data
 
 
 def render(data: dict, *, full_page: bool = True) -> str:

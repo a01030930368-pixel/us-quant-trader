@@ -59,3 +59,13 @@ def test_open_page_falls_back_to_default_browser(tmp_path, monkeypatch):
     page.write_text("x", encoding="utf-8")
     build.open_page(page)
     assert opened == [page.resolve().as_uri()]
+
+
+def test_reads_agent_status_when_present(tmp_path):
+    d = tmp_path / "paper"
+    d.mkdir()
+    (d / "state.json").write_text('{"schema_version": 1, "initial_capital": 1, "cash": 1}', encoding="utf-8")
+    (d / "agent.json").write_text('{"next_run": "2026-10-12T23:45:00+09:00", "last_result": "ok"}', encoding="utf-8")
+    assert build.load(d)["agent"]["last_result"] == "ok"
+    (d / "agent.json").write_text("{broken", encoding="utf-8")
+    assert "agent" not in build.load(d)
