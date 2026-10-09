@@ -114,7 +114,7 @@ def loop() -> None:
             log(f"모의투자 종료: {state['last_result']}")
         state.update(agent="running", checked_at=now.isoformat(timespec="seconds"),
                      next_run=next_run(datetime.now(KST), state.get("last_day"))
-                     .isoformat(timespec="minutes"))
+                     .isoformat(timespec="seconds"))
         write_state(state)
         time.sleep(60)
 
