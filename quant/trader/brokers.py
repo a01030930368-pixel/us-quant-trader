@@ -112,7 +112,7 @@ class KiwoomBroker:
 
     MIN_GAP = 1.0  # seconds between requests; Kiwoom rejects bursts
 
-    def call(self, path: str, api_id: str, body: dict, retries: int = 2) -> dict:
+    def call(self, path: str, api_id: str, body: dict, retries: int = 3) -> dict:
         for attempt in range(retries + 1):
             wait = self._last_call + self.MIN_GAP - time.time()
             if wait > 0:
@@ -126,9 +126,12 @@ class KiwoomBroker:
             data = r.json() if r.content else {}
             if r.ok and str(data.get("return_code", "0")) == "0":
                 return data
-            limited = r.status_code == 429 or "초과" in str(data.get("return_msg", ""))
-            if attempt < retries and (r.status_code >= 500 or limited):
-                time.sleep(2 * (attempt + 1))
+            msg = str(data.get("return_msg", ""))
+            # 429 / "초과": rate limit. "지연"/"재시도" (e.g. RC9002, mock server
+            # busy): Kiwoom asks to retry later. Neither means the request ran.
+            busy = r.status_code == 429 or any(k in msg for k in ("초과", "지연", "재시도"))
+            if attempt < retries and (r.status_code >= 500 or busy):
+                time.sleep((10 if busy else 2) * (attempt + 1))
                 continue
             raise RuntimeError(f"{api_id} 실패 (HTTP {r.status_code}): {data}")
         raise AssertionError("unreachable")
