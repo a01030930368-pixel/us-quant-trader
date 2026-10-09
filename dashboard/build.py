@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 import webbrowser
 from datetime import datetime
@@ -62,6 +64,27 @@ def render(data: dict, *, full_page: bool = True) -> str:
             "</head>\n<body>\n" + body + "\n</body>\n</html>\n")
 
 
+def _app_browsers() -> list[Path]:
+    """Edge(윈도우 기본)와 크롬의 설치 위치 후보."""
+    roots = [os.environ.get(k) for k in ("PROGRAMFILES(X86)", "PROGRAMFILES", "LOCALAPPDATA")]
+    rels = [r"Microsoft\Edge\Application\msedge.exe", r"Google\Chrome\Application\chrome.exe"]
+    return [Path(r) / rel for rel in rels for r in roots if r]
+
+
+def open_page(path: Path) -> None:
+    """윈도우에서는 주소창 없는 앱 창으로, 그 밖에는 기본 브라우저로 연다."""
+    uri = path.resolve().as_uri()
+    if os.name == "nt":
+        for exe in _app_browsers():
+            if exe.exists():
+                try:
+                    subprocess.Popen([str(exe), f"--app={uri}", "--start-maximized"])
+                    return
+                except OSError:
+                    continue
+    webbrowser.open(uri)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="모의투자 대시보드 만들기")
     ap.add_argument("--data", default=str(ROOT / "paper"), help="기록 폴더 (기본: paper/)")
@@ -100,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     out.write_text(render(data, full_page=not args.fragment), encoding="utf-8")
     print(f"대시보드 저장: {out}")
     if not args.no_open:
-        webbrowser.open(out.resolve().as_uri())
+        open_page(out)
     return 0
 
 
