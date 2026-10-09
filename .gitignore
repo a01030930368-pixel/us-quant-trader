@@ -5,3 +5,4 @@ __pycache__/
 data_cache/
 reports/
 .pytest_cache/
+paper/
