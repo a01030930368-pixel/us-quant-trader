@@ -37,7 +37,7 @@ python dashboard/build.py            # paper/ 폴더의 기록으로 보기 (기
 python dashboard/build.py --sample   # 샘플 데이터로 보기
 ```
 
-결과 파일은 `reports/dashboard.html`에 저장됩니다. 기록 형식은 `docs/paper-format.md`를 보세요.
+결과 파일은 `reports/dashboard.html`에 저장됩니다. 브라우저에서 F11(전체화면)으로 보면 한 화면에 모두 들어옵니다. 기록 형식은 `docs/paper-format.md`를 보세요.
 
 ## 순위 규칙
 
