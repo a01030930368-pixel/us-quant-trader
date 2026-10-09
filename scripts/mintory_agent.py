@@ -10,6 +10,7 @@
 - 23:45 이후 새벽 5시 전에 켜졌는데 그날 실행이 아직이면 바로 실행한다.
 - 한 번에 하나만 돈다(이미 떠 있으면 조용히 종료).
 - 상태는 paper/agent.json, 로그는 paper/logs/agent.log.
+- 이 파일이 바뀌면(update.bat 업데이트) 스스로 새 코드로 다시 켜진다.
 """
 from __future__ import annotations
 
@@ -96,6 +97,20 @@ def run_trader() -> int:
     return proc.returncode
 
 
+def code_mtime() -> float:
+    return Path(__file__).stat().st_mtime
+
+
+def restart(lock: socket.socket) -> None:
+    """Hand over to a fresh copy of this script running the updated code."""
+    log("코드가 업데이트되어 자동 실행기를 다시 켬")
+    lock.close()
+    flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
+             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    subprocess.Popen([sys.executable, str(Path(__file__).resolve())], cwd=ROOT,
+                     creationflags=flags, start_new_session=os.name != "nt")
+
+
 def loop() -> None:
     lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -104,7 +119,11 @@ def loop() -> None:
         log("자동 실행기가 이미 켜져 있어 새로 켜지 않음")
         return
     log(f"자동 실행기 시작 (pid {os.getpid()})")
+    started = code_mtime()
     while True:
+        if code_mtime() != started:
+            restart(lock)
+            return
         state = read_state()
         now = datetime.now(KST)
         if due_now(now, state.get("last_day")):
