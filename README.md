@@ -30,7 +30,7 @@ PC 설치 없이 돌리려면 GitHub의 **Actions → backtest → Run workflow*
 
 ## Mintory 대시보드
 
-`mintory.bat`을 더블클릭하면 키움 모의계좌 잔고를 새로 읽고(주문은 내지 않음) 브라우저에 대시보드가 열립니다. 매일 자동 실행은 `register_daily_task.bat`을 한 번 더블클릭해 등록하세요(`docs/trader-guide.md` 참고).
+`mintory.bat`을 더블클릭하면 키움 모의계좌 잔고를 새로 읽고(주문은 내지 않음) 브라우저에 대시보드가 열립니다. Mintory를 한 번 열면 매일 자동 실행도 앱이 알아서 합니다(`docs/trader-guide.md` 참고).
 
 ```bash
 python dashboard/build.py            # paper/ 폴더의 기록으로 보기 (기록이 없으면 샘플)
