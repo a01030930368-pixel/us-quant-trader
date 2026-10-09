@@ -154,6 +154,14 @@ class Runner:
         with open(self.dir / name, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
+    def _last_holdings(self) -> tuple[dict[str, dict], float | None]:
+        """Holdings from the previous state.json, shown when the broker can't
+        be read so a failed lookup doesn't look like an empty account."""
+        prev = self._read("state.json")
+        positions = {p["symbol"]: {"qty": p["qty"], "avg_price": p["avg_price"]}
+                     for p in prev.get("positions", [])}
+        return positions, prev.get("cash")
+
     def _reconcile(self, positions: dict[str, dict]) -> None:
         """Brokers like Kiwoom only accept an order; the fill shows up later in
         the balance. Settle earlier "pending" trades from current holdings:
@@ -230,8 +238,9 @@ class Runner:
         except Exception as e:  # noqa: BLE001 - report instead of crashing
             alerts.append({"level": "error", "message":
                            f"계좌 조회에 실패해 매매하지 않았습니다: {str(e)[:200]}"})
-            return self._state(now, meta, alerts=alerts, positions={}, cash=None,
-                               prices=prices)
+            positions, cash = self._last_holdings()
+            return self._state(now, meta, alerts=alerts, positions=positions, cash=cash,
+                               prices=prices, targets=targets, scores=scores, sig=sig)
         self._reconcile(positions)
         meta.setdefault("started_at", str(today.date()))
         meta.setdefault("initial_capital", cash + sum(p["qty"] * prices.get(s, 0.0)
@@ -294,7 +303,7 @@ class Runner:
             try:
                 positions, cash = self.broker.positions(), self.broker.cash_usd()
             except Exception:  # noqa: BLE001 - state must still be written
-                positions, cash = {}, None
+                positions, cash = self._last_holdings()
         sleeve_of = {t["symbol"]: t["sleeve"] for t in (targets or [])}
         state = {
             "schema_version": 1,

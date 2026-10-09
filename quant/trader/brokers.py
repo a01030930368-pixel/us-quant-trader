@@ -137,8 +137,10 @@ class KiwoomBroker:
                 return data
             msg = str(data.get("return_msg", ""))
             # 429 / "초과": rate limit. "지연"/"재시도" (e.g. RC9002, mock server
-            # busy): Kiwoom asks to retry later. Neither means the request ran.
-            busy = r.status_code == 429 or any(k in msg for k in ("초과", "지연", "재시도"))
+            # busy) or "Timeover response" (RC20): Kiwoom asks to retry later.
+            # None of these means the request ran.
+            busy = r.status_code == 429 or any(
+                k in msg for k in ("초과", "지연", "재시도", "Timeover", "timeover"))
             if attempt < retries and (r.status_code >= 500 or busy):
                 time.sleep((10 if busy else 2) * (attempt + 1))
                 continue

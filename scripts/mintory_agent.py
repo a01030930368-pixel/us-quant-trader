@@ -101,13 +101,16 @@ def loop() -> None:
     try:
         lock.bind(("127.0.0.1", LOCK_PORT))
     except OSError:
-        return  # another agent is already running
-    log("자동 실행기 시작")
+        log("자동 실행기가 이미 켜져 있어 새로 켜지 않음")
+        return
+    log(f"자동 실행기 시작 (pid {os.getpid()})")
     while True:
         state = read_state()
         now = datetime.now(KST)
         if due_now(now, state.get("last_day")):
             log("모의투자 실행")
+            state.update(agent="trading", checked_at=now.isoformat(timespec="seconds"))
+            write_state(state)
             code = run_trader()
             state.update(last_day=session_day(now), last_run=now.isoformat(timespec="seconds"),
                          last_result="ok" if code == 0 else f"error (exit {code})")
@@ -117,6 +120,17 @@ def loop() -> None:
                      .isoformat(timespec="minutes"))
         write_state(state)
         time.sleep(60)
+
+
+def agent_alive() -> bool:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", LOCK_PORT))
+        return False
+    except OSError:
+        return True
+    finally:
+        probe.close()
 
 
 def startup_file() -> Path:
@@ -148,10 +162,23 @@ def main() -> None:
         print("자동 시작을 해제했습니다.")
     elif args.status:
         state = read_state()
-        print(f"다음 자동 실행: {next_run(datetime.now(KST), state.get('last_day'))}")
-        print(f"마지막 실행: {state.get('last_run')} ({state.get('last_result')})")
+        alive = agent_alive()
+        if not alive:
+            print("자동 실행기: 꺼져 있음 (Mintory를 열면 켜집니다)")
+        elif state.get("agent") == "trading":
+            print(f"자동 실행기: 지금 모의투자 실행 중 ({state.get('checked_at')} 시작)")
+        else:
+            print("자동 실행기: 켜져 있음")
+        nxt = next_run(datetime.now(KST), state.get("last_day")).isoformat(timespec="minutes")
+        print(f"다음 자동 실행: {nxt}")
+        print(f"마지막 실행: {state.get('last_run') or '아직 없음'} ({state.get('last_result') or '-'})")
     else:
-        loop()
+        try:
+            loop()
+        except Exception:
+            import traceback
+            log("자동 실행기 오류로 종료\n" + traceback.format_exc())
+            raise
 
 
 if __name__ == "__main__":
