@@ -49,3 +49,13 @@ def test_reads_paper_records_and_skips_torn_line(tmp_path):
 def test_script_breakout_is_escaped():
     html = build.render({"state": {"strategy": {"name": "</script><b>x"}}}, full_page=False)
     assert "</script><b>" not in html
+
+
+def test_open_page_falls_back_to_default_browser(tmp_path, monkeypatch):
+    opened = []
+    monkeypatch.setattr(build.os, "name", "posix")
+    monkeypatch.setattr(build.webbrowser, "open", opened.append)
+    page = tmp_path / "d.html"
+    page.write_text("x", encoding="utf-8")
+    build.open_page(page)
+    assert opened == [page.resolve().as_uri()]

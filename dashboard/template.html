@@ -534,7 +534,7 @@ tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
     for (var dv = 0; dv >= ddLo - 1e-9; dv -= ddStep) {
       var y2 = yd(dv).toFixed(1);
       s.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y2 + '" y2="' + y2 + '"/>');
-      s.push('<text x="' + (padL - 10) + '" y="' + y2 + '" dy="0.32em" text-anchor="end">' + (Math.abs(dv) < 1e-9 ? "0%" : pct(dv, 0)) + "</text>");
+      s.push('<text x="' + (padL - 10) + '" y="' + y2 + '" dy="0.32em" text-anchor="end">' + (Math.abs(dv) < 1e-9 ? "0%" : pct(dv, ddStep < 0.01 ? 1 : 0)) + "</text>");
     }
     s.push("</g>");
     // x axis: month starts, or evenly spaced days for short ranges
