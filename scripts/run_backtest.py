@@ -61,7 +61,13 @@ def main() -> None:
     header = (f"# 전략 순위\n\n데이터 {prices.index[0].date()} ~ {prices.index[-1].date()}, "
               f"검증(OOS) 시작 {args.split}, 거래비용 편도 {args.cost_bps}bp\n\n"
               "순위는 OOS 기준입니다. IS가 OOS보다 훨씬 좋으면 과최적화 의심.\n\n")
-    (out / "ranking.md").write_text(header + view.to_markdown(index=False), encoding="utf-8")
+    bench = view[table["strategy"] == "buy_and_hold"]
+    body = ("## 비교 기준 (단순 보유)\n\n" + bench.to_markdown(index=False)
+            + "\n\n## 전체 순위\n\n" + view.to_markdown(index=False))
+    (out / "ranking.md").write_text(header + body, encoding="utf-8")
+    print("비교 기준:")
+    print(bench.to_string(index=False))
+    print("\n상위 15개:")
     print(view.head(15).to_string(index=False))
     print(f"\n전체 결과: {out / 'ranking.md'}")
 
