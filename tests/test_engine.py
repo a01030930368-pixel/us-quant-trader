@@ -82,3 +82,18 @@ def test_blend_is_weighted_sum(prices):
     w = blend(prices, [("buy_and_hold", {"asset": "SPY"}, 0.7),
                        ("buy_and_hold", {"asset": "GLD"}, 0.3)])
     pd.testing.assert_frame_equal(w, a * 0.7 + b * 0.3)
+
+
+def test_next_open_execution_lags_one_day(prices):
+    """If each day opened at its own close, trading at the next open would be the
+    same as a one-day delay; if it opened at the previous close, the same as
+    trading at the signal day's close."""
+    same_close = run_backtest(prices, momentum_rotation(prices, ["SPY", "QQQ", "GLD"], lookback=63),
+                              cost_bps=0, opens=prices.shift(1).bfill())
+    base = run_backtest(prices, momentum_rotation(prices, ["SPY", "QQQ", "GLD"], lookback=63), cost_bps=0)
+    assert np.allclose(same_close.returns.values[1:], base.returns.values[1:])
+    opens = prices
+    w = momentum_rotation(prices, ["SPY", "QQQ", "GLD"], lookback=63)
+    nxt = run_backtest(prices, w, cost_bps=0, opens=opens)
+    delayed = run_backtest(prices, w.shift(1).fillna(0.0), cost_bps=0)
+    assert np.allclose(nxt.returns.values, delayed.returns.values)

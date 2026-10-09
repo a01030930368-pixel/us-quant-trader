@@ -1,0 +1,23 @@
+# Actions 탭 -> validate -> Run workflow: 혼합 전략 정밀 검증 리포트를 만듭니다.
+name: validate
+on:
+  workflow_dispatch:
+    inputs:
+      aggr_share:
+        description: "공격 바구니 비중 (0.5 = 50%)"
+        default: "0.5"
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python scripts/validate_strategy.py --aggr-share ${{ inputs.aggr_share }}
+      - run: cat reports/validation.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validation
+          path: reports/

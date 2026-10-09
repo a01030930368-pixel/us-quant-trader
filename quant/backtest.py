@@ -20,18 +20,32 @@ class BacktestResult:
 
 
 def run_backtest(prices: pd.DataFrame, weights: pd.DataFrame,
-                 cost_bps: float = 10.0) -> BacktestResult:
+                 cost_bps: float = 10.0,
+                 opens: pd.DataFrame | None = None) -> BacktestResult:
     """Simulate holding `weights` (rows sum to <=1, remainder is cash).
 
     cost_bps: one-way cost per unit of turnover in basis points
     (commission + slippage + FX spread).
+    opens: if given, weights decided at day t's close are traded at day t+1's
+    open (realistic for a bot that reads the close and orders next morning).
+    Otherwise they are traded at day t's close.
     """
     weights = weights.reindex(prices.index).ffill().fillna(0.0)
     weights = weights.reindex(columns=prices.columns, fill_value=0.0)
-    asset_ret = prices.pct_change().fillna(0.0)
 
-    held = weights.shift(1).fillna(0.0)
-    gross = (held * asset_ret).sum(axis=1)
+    if opens is None:
+        asset_ret = prices.pct_change().fillna(0.0)
+        held = weights.shift(1).fillna(0.0)
+        gross = (held * asset_ret).sum(axis=1)
+    else:
+        opens = opens.reindex(index=prices.index, columns=prices.columns)
+        overnight = (opens / prices.shift(1) - 1).fillna(0.0)
+        intraday = (prices / opens - 1).fillna(0.0)
+        before = weights.shift(2).fillna(0.0)   # held until this morning's open
+        after = weights.shift(1).fillna(0.0)    # bought at this morning's open
+        gross = ((1 + (before * overnight).sum(axis=1))
+                 * (1 + (after * intraday).sum(axis=1)) - 1)
+        weights = weights.shift(1).fillna(0.0)  # trades happen a day later
     turnover = weights.diff().abs().sum(axis=1)
     turnover.iloc[0] = weights.iloc[0].abs().sum()
     net = gross - turnover * cost_bps / 10_000
