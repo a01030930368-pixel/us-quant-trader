@@ -193,6 +193,40 @@ def main():
                          "공격 비중": f"{sh:.0%}", **s, "SPY 이김": beats(s, spy)})
     out += ["### 카나리아: 리밸런싱 날짜 운 점검\n", fmt(pd.DataFrame(rows)), ""]
 
+    # 7. Round 3: single rebalance days swing the drawdown by 20-30%p, so
+    # compare candidates as 4 tranches (month end, +5, +10, +15), which
+    # averages out the day luck. The canary check is tranched too.
+    T = {"tranches": 4, "spacing": 5}
+    X2 = ["QLD", "SSO", "GLD", "TLT"]
+    cases = {
+        "지금 전략 (4분할)": ("tranched", {**BASE, **T}),
+        "카나리아 공격 50%": ("tranched", {**BASE, **T, "strategy": "canary_gate"}),
+        "카나리아 공격 70%": ("tranched", {**BASE, **T, "strategy": "canary_gate",
+                                      "aggr_share": 0.7}),
+        "카나리아 공격 100%": ("tranched", {**BASE, **T, "strategy": "canary_gate",
+                                       "aggr_share": 1.0}),
+        "카나리아 + 2배 ETF 공격 100%": ("tranched", {**BASE, **T, "strategy": "canary_gate",
+                                              "aggr_assets": X2, "aggr_share": 1.0}),
+        "신호 EEM만, 공격 50%": ("tranched", {**BASE, **T, "strategy": "canary_gate",
+                                        "canary": ["EEM"]}),
+        "신호 EEM만, 공격 70%": ("tranched", {**BASE, **T, "strategy": "canary_gate",
+                                        "canary": ["EEM"], "aggr_share": 0.7}),
+        "신호 EEM·AGG·EFA": ("tranched", {**BASE, **T, "strategy": "canary_gate",
+                                      "canary": ["EEM", "AGG", "EFA"]}),
+    }
+    rows = []
+    for name, (strat, params) in cases.items():
+        res = real(strat, params)
+        s = stats(res.returns.loc[START:])
+        full = summarize(sim(strat, params).returns)
+        rows.append({"구분": name, **s,
+                     "2015~19 연수익": summarize(res.returns.loc["2015":"2019"])["cagr"],
+                     "2020~ 연수익": summarize(res.returns.loc["2020":])["cagr"],
+                     "연 회전율": f"{res.turnover.loc[START:].sum() / (len(res.returns.loc[START:]) / 252):.1f}배",
+                     "전체(2007~,모의) 연수익": full["cagr"], "전체 최대낙폭": full["mdd"],
+                     "SPY 이김": beats(s, spy)})
+    out += ["## 7. 날짜 운을 없앤 비교 (모두 4분할)\n", fmt(pd.DataFrame(rows)), ""]
+
     Path("reports").mkdir(exist_ok=True)
     text = "\n".join(out).replace("nan%", "-").replace("| nan ", "| -   ")
     Path("reports/research.md").write_text(text, encoding="utf-8")
