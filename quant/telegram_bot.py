@@ -1,0 +1,196 @@
+"""텔레그램 명령: 휴대폰에서 Mintory 잔고를 보고, 일시정지/재개한다.
+
+자동 실행기(scripts/mintory_agent.py)가 켜져 있는 동안 봇에 온 메시지를 읽고 답한다.
+.env 의 TELEGRAM_CHAT_ID 대화방(notify_setup.bat 으로 연결한 본인)에서 온 메시지만 따르고,
+나머지는 무시한다. 주문을 내는 명령은 일부러 없다.
+
+    /balance  잔고        보유 종목과 평가금액 (시세가 있으면 최신 시세로)
+    /refresh  새로고침    키움 잔고를 새로 불러온 뒤 잔고 보내기 (주문 없음)
+    /status   상태        다음 자동 실행, 마지막 실행 결과, 일시정지 여부
+    /pause    일시정지    자동 매매가 주문을 내지 않게 멈춤
+    /resume   재개        다시 주문
+    /help     도움말
+"""
+from __future__ import annotations
+
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
+
+import requests
+
+from quant import notify
+
+COMMANDS = [
+    ("balance", "잔고", "보유 종목과 평가금액"),
+    ("refresh", "새로고침", "키움 잔고를 새로 불러오기 (주문 없음)"),
+    ("status", "상태", "다음 자동 실행과 마지막 결과"),
+    ("pause", "일시정지", "자동 매매 주문 멈추기"),
+    ("resume", "재개", "자동 매매 주문 다시 하기"),
+    ("help", "도움말", "명령 목록"),
+]
+ALIASES = {ko: en for en, ko, _ in COMMANDS} | {
+    "start": "help", "도움": "help", "정지": "pause", "멈춰": "pause", "다시시작": "resume",
+}
+MAX_AGE = 600  # seconds; older messages (sent while the PC was off) are ignored
+WEEKDAY_KO = "월화수목금토일"
+
+
+@dataclass
+class Actions:
+    """What the agent lets the bot do."""
+    state: Callable[[], dict]          # paper/state.json
+    agent: Callable[[], dict]          # paper/agent.json
+    paused: Callable[[], bool]
+    set_paused: Callable[[bool], None]
+    refresh: Callable[[], str | None]  # run a balance check; None when another run is going
+    quotes: Callable[[list[str]], dict] | None = None
+
+
+def command(text: str) -> str | None:
+    """'/balance@MintoryBot', '잔고', '/잔고' -> 'balance'."""
+    word = (text or "").strip().split(maxsplit=1)[0] if (text or "").strip() else ""
+    word = word.lstrip("/").split("@", 1)[0].lower()
+    if word in ALIASES.values():
+        return word
+    return ALIASES.get(word)
+
+
+def _usd(v: float) -> str:
+    return f"${v:,.2f}"
+
+
+def _when(iso: str | None) -> str:
+    if not iso:
+        return "-"
+    try:
+        t = datetime.fromisoformat(iso)
+    except ValueError:
+        return iso
+    return f"{t.month}/{t.day}({WEEKDAY_KO[t.weekday()]}) {t:%H:%M}"
+
+
+def balance_text(state: dict, quotes: dict | None = None, paused: bool = False) -> str:
+    if not state:
+        return "아직 잔고 기록이 없어요. Mintory에서 잔고 새로고침을 한 번 눌러 주세요."
+    q = (quotes or {}).get("quotes") or {}
+    rows, total = [], float(state.get("cash") or 0)
+    for p in state.get("positions") or []:
+        sym, qty = p.get("symbol"), float(p.get("qty") or 0)
+        live = q.get(sym) or {}
+        price = float(live.get("price") or p.get("last_price") or 0)
+        value = qty * price
+        total += value
+        avg = float(p.get("avg_price") or 0)
+        pnl = f" · 손익 {(price / avg - 1) * 100:+.2f}%" if avg else ""
+        day = f" · 오늘 {live['change'] * 100:+.2f}%" if live.get("change") is not None else ""
+        rows.append((value, f"· {sym} {qty:g}주 {_usd(value)}{day}{pnl}"))
+    basis = (f"시세 {_when(quotes.get('as_of'))}" if q
+             else f"기록 {_when(state.get('updated_at'))}")
+    out = [f"💰 Mintory 잔고 ({basis} 기준)", f"평가금액 {_usd(total)}"]
+    initial = float(state.get("initial_capital") or 0)
+    if initial:
+        out[-1] += f" · 누적 {(total / initial - 1) * 100:+.2f}%"
+    out += [r for _, r in sorted(rows, reverse=True)]
+    out.append(f"· 현금 {_usd(float(state.get('cash') or 0))}")
+    if paused:
+        out.append("⏸ 일시정지 중 (주문 안 함)")
+    return "\n".join(out)
+
+
+def status_text(state: dict, agent: dict, paused: bool) -> str:
+    out = ["📋 Mintory 상태"]
+    out.append("⏸ 일시정지 중: 자동 매매가 주문을 내지 않아요. /resume 으로 재개"
+               if paused else "▶ 자동 매매 켜짐")
+    if agent.get("next_run"):
+        out.append(f"다음 자동 실행: {_when(agent['next_run'])}")
+    if agent.get("last_run"):
+        res = agent.get("last_result") or "-"
+        out.append(f"마지막 실행: {_when(agent['last_run'])} · {'OK' if res == 'ok' else res}")
+    nxt = (state.get("next_rebalance") or {}).get("order_date")
+    if nxt:
+        out.append(f"다음 리밸런싱 주문일: {nxt}")
+    if agent.get("missed"):
+        out.append("⚠️ 놓친 실행: " + ", ".join(agent["missed"]))
+    return "\n".join(out)
+
+
+def help_text() -> str:
+    return "Mintory 명령\n" + "\n".join(f"/{en} ({ko}) {desc}" for en, ko, desc in COMMANDS)
+
+
+def handle(text: str, act: Actions) -> str:
+    cmd = command(text)
+    if cmd == "balance":
+        state = act.state()
+        syms = [p["symbol"] for p in state.get("positions") or [] if p.get("symbol")]
+        quotes = act.quotes(syms) if act.quotes and syms else None
+        return balance_text(state, quotes, act.paused())
+    if cmd == "refresh":
+        result = act.refresh()
+        if result is None:
+            return "지금 다른 작업(매매 실행이나 새로고침) 중이에요. 잠시 뒤에 다시 보내 주세요."
+        head = "" if result == "ok" else f"⚠️ 잔고를 불러오지 못했어요 ({result}). 마지막 기록을 보여 드려요.\n"
+        return head + balance_text(act.state(), None, act.paused())
+    if cmd == "status":
+        return status_text(act.state(), act.agent(), act.paused())
+    if cmd == "pause":
+        if act.paused():
+            return "이미 일시정지 중이에요. 다시 하려면 /resume"
+        act.set_paused(True)
+        return "⏸ 일시정지했어요. 자동 매매가 주문을 내지 않아요.\n다시 하려면 /resume"
+    if cmd == "resume":
+        if not act.paused():
+            return "일시정지 상태가 아니에요. 자동 매매는 그대로 켜져 있어요."
+        act.set_paused(False)
+        return "▶ 다시 시작했어요. 다음 자동 실행부터 주문을 냅니다."
+    return help_text()
+
+
+def _api(token: str, method: str, **params) -> dict:
+    r = requests.post(f"{notify.API}/bot{token}/{method}", json=params,
+                      timeout=params.get("timeout", 0) + 15)
+    r.raise_for_status()
+    return r.json()
+
+
+def serve(act: Actions, get_offset: Callable[[], int | None], set_offset: Callable[[int], None],
+          log: Callable[[str], None] = lambda m: None, once: bool = False) -> None:
+    """Answer the owner's messages forever (one round with once=True). Never raises."""
+    menu_for, last_err = None, None
+    while True:
+        s = {"token": ""}
+        try:
+            s = notify.settings()
+            if not (s["token"] and s["chat_id"]):
+                if once:
+                    return
+                time.sleep(60)
+                continue
+            if menu_for != s["token"]:
+                _api(s["token"], "setMyCommands",
+                     commands=[{"command": en, "description": f"{ko} · {desc}"}
+                               for en, ko, desc in COMMANDS])
+                menu_for = s["token"]
+            params = {"timeout": 0 if once else 25, "allowed_updates": ["message"]}
+            if get_offset() is not None:
+                params["offset"] = get_offset()
+            for up in _api(s["token"], "getUpdates", **params).get("result", []):
+                set_offset(up["update_id"] + 1)
+                msg = up.get("message") or {}
+                if str((msg.get("chat") or {}).get("id")) != str(s["chat_id"]):
+                    continue
+                if time.time() - msg.get("date", 0) > MAX_AGE or not msg.get("text"):
+                    continue
+                log(f"텔레그램 명령: {msg['text'][:40]}")
+                notify.send(handle(msg["text"], act))
+        except Exception as e:  # noqa: BLE001 - keep listening; a 409 means another copy polls
+            err = str(e).replace(s["token"], "***") if s["token"] else str(e)
+            if err != last_err:  # the bot token must never reach the log
+                log(f"텔레그램 명령 오류: {err[:150]}")
+                last_err = err
+            if not once:
+                time.sleep(30)
+        if once:
+            return

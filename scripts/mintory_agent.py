@@ -16,6 +16,8 @@ Mintory 화면의 버튼(잔고 새로고침, 지금 매매 실행, 일시정지
 - 화면은 http://127.0.0.1:47321 에서 보여준다. 이 주소는 이 PC 안에서만 열린다.
   같은 포트가 "이미 켜져 있음" 표시도 겸해서, 한 번에 하나만 돈다.
 - 일시정지는 paper/STOP 파일을 만들고 지우는 것과 같다(실행기가 STOP이 있으면 주문을 안 냄).
+- 텔레그램이 연결돼 있으면 휴대폰 명령(/balance, /refresh, /status, /pause, /resume)에 답한다
+  (quant/telegram_bot.py). 주문을 내는 명령은 없다.
 - 상태는 paper/agent.json, 로그는 paper/logs/agent.log.
 - 이 파일이 바뀌면(update.bat 업데이트) 스스로 새 코드로 다시 켜진다.
 """
@@ -365,6 +367,7 @@ def loop(restarted: bool = False) -> None:
     log(f"자동 실행기 시작 (pid {os.getpid()}, 화면 {URL})")
     started = code_mtime()
     update_state(agent="running", job=None)
+    start_bot()
     while True:
         if code_mtime() != started and _job_lock.acquire(blocking=False):
             stay_awake(False)
@@ -404,6 +407,34 @@ def check_missed(now: datetime, state: dict) -> list[str]:
     if changes:
         update_state(**changes)
     return days
+
+
+def refresh_now() -> str | None:
+    """Balance check for the phone; None when another run holds the lock."""
+    if not _job_lock.acquire(blocking=False):
+        return None
+    try:
+        return _run_job("refresh")
+    finally:
+        _job_lock.release()
+
+
+def start_bot() -> None:
+    from quant import live, telegram_bot
+    act = telegram_bot.Actions(
+        state=lambda: _read_json(PAPER / "state.json"), agent=read_state,
+        paused=lambda: STOP.exists(), set_paused=set_paused, refresh=refresh_now,
+        quotes=lambda syms: live.quotes(live.clean_symbols(",".join(syms))))
+    threading.Thread(target=telegram_bot.serve, daemon=True, kwargs={
+        "act": act, "get_offset": lambda: read_state().get("tg_offset"),
+        "set_offset": lambda n: update_state(tg_offset=n), "log": log}).start()
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
 
 
 def agent_alive() -> bool:
