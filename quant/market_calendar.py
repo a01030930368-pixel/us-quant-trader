@@ -107,5 +107,5 @@ def upcoming(start: date, days: int = 400) -> dict:
     """Holidays and early closes from start on, for the dashboard clock."""
     end = start + timedelta(days=days)
     years = range(start.year, end.year + 1)
-    pick = lambda s: sorted(d.isoformat() for y in years for d in s(y) if start <= d <= end)  # noqa: E731
+    pick = lambda s: sorted(d.isoformat() for y in years for d in s(y) if start <= d <= end)
     return {"holidays": pick(holidays), "early_closes": pick(early_closes)}

@@ -265,3 +265,43 @@ def test_no_auto_run_on_us_holidays():
     assert agent.next_run(k(2026, 11, 26, 9, 0), "2026-11-25") == k(2026, 11, 27, 23, 45)
     assert agent.missed_days(k(2026, 11, 28, 10, 0), "2026-11-25") == ["2026-11-27"]
     assert agent.preview_due("2026-11-25", {"order_date": "2026-11-27"}, None) == "2026-11-27"
+
+
+def test_retry_reason():
+    acct = [{"level": "error", "message": "계좌 조회에 실패해 매매하지 않았습니다: timeout"}]
+    assert agent.retry_reason("ok", [], 0) is None
+    assert agent.retry_reason("error (exit 1)", [], 0) == "error (exit 1)"
+    assert agent.retry_reason("ok", acct, 0).startswith("계좌 조회에 실패")
+    assert agent.retry_reason("error (exit 1)", acct, 2) is None              # orders went out
+    assert agent.retry_reason("ok", [{"level": "error", "message": "STOP 파일이 있어"}], 0) is None
+
+
+def test_run_auto_retries_then_reports_once(tmp_path, monkeypatch):
+    from quant import notify
+    monkeypatch.setattr(agent, "STATE", tmp_path / "agent.json")
+    monkeypatch.setattr(agent, "LOG", tmp_path / "agent.log")
+    monkeypatch.setattr(agent, "PAPER", tmp_path)
+    codes = [1, 1, 0]
+    monkeypatch.setattr(agent, "run_trader", lambda args: codes.pop(0))
+    sent, reports = [], []
+    monkeypatch.setattr(notify, "send", lambda text: sent.append(text) or True)
+    monkeypatch.setattr(notify, "notify_run", lambda job, result, paper, before: reports.append(result) or True)
+    monkeypatch.setattr(agent, "datetime", type("D", (), {"now": staticmethod(lambda tz=None: k(2026, 10, 12, 23, 46)),
+                                                         "fromisoformat": staticmethod(datetime.fromisoformat)}))
+    agent.run_auto(k(2026, 10, 12, 23, 45))
+    r = agent.read_state()["retry"]
+    assert r["attempt"] == 1 and r["at"].startswith("2026-10-12T23:56") and len(sent) == 1 and not reports
+    assert agent.retry_due(k(2026, 10, 12, 23, 50), r) is None
+    assert agent.retry_due(k(2026, 10, 12, 23, 57), r) == 1
+    agent.run_auto(k(2026, 10, 12, 23, 57), 1)                  # fails again: quiet
+    assert agent.read_state()["retry"]["attempt"] == 2 and len(sent) == 1 and not reports
+    agent.run_auto(k(2026, 10, 13, 0, 7), 2)                    # succeeds: one normal report
+    st = agent.read_state()
+    assert st["retry"] is None and reports == ["ok"] and st["last_result"] == "ok"
+    assert st["last_day"] == "2026-10-12"
+
+
+def test_no_retry_after_the_window():
+    late = k(2026, 10, 13, 4, 55)
+    assert agent.session_day(late + agent.RETRY_GAP) != agent.session_day(late)
+    assert not agent.in_run_window(k(2026, 10, 13, 5, 5))

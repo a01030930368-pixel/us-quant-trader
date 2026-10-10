@@ -141,6 +141,11 @@ class KiwoomBroker:
             # None of these means the request ran.
             busy = r.status_code == 429 or any(
                 k in msg for k in ("초과", "지연", "재시도", "Timeover", "timeover"))
+            # An expired or revoked token is refused before the request runs:
+            # get a new one and send again.
+            if attempt < retries and (r.status_code == 401 or "토큰" in msg or "token" in msg.lower()):
+                self._token, self._token_exp = None, 0.0
+                continue
             if attempt < retries and (r.status_code >= 500 or busy):
                 time.sleep((10 if busy else 2) * (attempt + 1))
                 continue

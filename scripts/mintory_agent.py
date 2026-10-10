@@ -263,7 +263,7 @@ _job_lock = threading.Lock()
 _job: dict = {"name": None, "started": None}
 
 
-def _run_job(name: str) -> str:
+def _run_job(name: str, notify_done: bool = True) -> str:
     """Run a job while holding _job_lock; returns "ok" or an error text."""
     _job.update(name=name, started=now_iso())
     update_state(agent="trading" if name != "refresh" else "refreshing", job=name,
@@ -276,7 +276,7 @@ def _run_job(name: str) -> str:
     except Exception as e:  # noqa: BLE001 - a failed run must not kill the agent
         result = f"error ({e})"
     log(f"{JOB_NAMES[name]} 종료: {result}")
-    if name != "refresh":
+    if name != "refresh" and notify_done:
         from quant import notify
         if notify.notify_run(name, result, PAPER, trades_before):
             log("휴대폰 알림 보냄")
@@ -284,6 +284,71 @@ def _run_job(name: str) -> str:
                  last_job={"name": name, "finished": now_iso(), "result": result})
     _job.update(name=None, started=None)
     return result
+
+
+# -- automatic retry of a failed nightly run ------------------------------------
+RETRY_GAP = timedelta(minutes=10)
+MAX_RETRIES = 3
+# Run alerts that mean "nothing was traded because something outside was down".
+RETRY_ALERTS = ("계좌 조회에 실패", "가격 데이터가")
+
+
+def retry_reason(result: str, alerts: list[dict], new_trades: int) -> str | None:
+    """Why the run is worth trying again, or None. Never after orders went out:
+    the next nightly run reconciles those against the target instead."""
+    if new_trades:
+        return None
+    if result != "ok":
+        return result
+    for a in alerts:
+        msg = str(a.get("message", ""))
+        if a.get("level") == "error" and msg.startswith(RETRY_ALERTS):
+            return msg[:120]
+    return None
+
+
+def in_run_window(t: datetime) -> bool:
+    t = t.astimezone(KST)
+    return t.hour < CATCHUP_UNTIL or (t.hour, t.minute) >= RUN_AT
+
+
+def retry_message(why: str, at: datetime, attempt: int) -> str:
+    return (f"⚠️ 자동 매매가 실패했어요\n\n❗ {why}\n\n"
+            f"🔁 {at:%H:%M}에 다시 시도할게요 ({attempt}/{MAX_RETRIES}).\n"
+            "그래도 안 되면 결과를 다시 알려 드려요.")
+
+
+def run_auto(now: datetime, attempt: int = 0) -> str:
+    """The nightly run, retried up to MAX_RETRIES times RETRY_GAP apart inside the
+    run window when it failed before trading (Kiwoom or price data down)."""
+    from quant import notify
+    day = session_day(now)
+    before = count_lines(PAPER / "trades.jsonl")
+    with _job_lock:  # waits for a button run to finish first
+        result = _run_job("auto", notify_done=False)
+    alerts = _read_json(PAPER / "state.json").get("alerts") or []
+    why = retry_reason(result, alerts, count_lines(PAPER / "trades.jsonl") - before)
+    at = datetime.now(KST) + RETRY_GAP
+    if why and attempt < MAX_RETRIES and session_day(at) == day and in_run_window(at):
+        update_state(retry={"day": day, "attempt": attempt + 1, "at": at.isoformat(timespec="seconds"),
+                            "why": why})
+        log(f"자동 매매 다시 시도 예정 {at:%H:%M} ({attempt + 1}/{MAX_RETRIES}): {why}")
+        if attempt == 0:
+            notify.send(retry_message(why, at, attempt + 1))
+    else:
+        update_state(retry=None)
+        if notify.notify_run("auto", result, PAPER, before):
+            log("휴대폰 알림 보냄")
+    update_state(last_day=day, last_run=now.isoformat(timespec="seconds"), last_result=result)
+    send_preview(day)
+    return result
+
+
+def retry_due(now: datetime, retry: dict | None) -> int | None:
+    """The attempt number to run now, or None."""
+    if not retry or retry.get("day") != session_day(now):
+        return None
+    return retry["attempt"] if now >= datetime.fromisoformat(retry["at"]) else None
 
 
 def start_job(name: str) -> bool:
@@ -453,13 +518,16 @@ def loop(restarted: bool = False) -> None:
         state = read_state()
         now = datetime.now(KST)
         check_missed(now, state)
-        stay_awake(should_stay_awake(now, state.get("last_day")))
+        retry = state.get("retry")
+        if retry and retry.get("day") != session_day(now):
+            update_state(retry=None)  # the window closed; tomorrow's run takes over
+            retry = None
+        stay_awake(bool(retry) or should_stay_awake(now, state.get("last_day")))
         if due_now(now, state.get("last_day")):
-            with _job_lock:  # waits for a button run to finish first
-                result = _run_job("auto")
-            update_state(last_day=session_day(now), last_run=now.isoformat(timespec="seconds"),
-                         last_result=result)
-            send_preview(session_day(now))
+            run_auto(now)
+            state = read_state()
+        elif (attempt := retry_due(now, retry)) is not None:
+            run_auto(now, attempt)
             state = read_state()
         week = weekly_due(now, state.get("weekly_sent"))
         if week:

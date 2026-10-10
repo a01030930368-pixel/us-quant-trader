@@ -544,3 +544,30 @@ def test_runner_writes_preview(tmp_path, close):
     assert st["preview"]["order_date"] and "orders" in st["preview"]
     (r.dir / "STOP").write_text("x")
     assert r.run(close=close, now=datetime(2026, 10, 8, 16, tzinfo=timezone.utc))["preview"] == st["preview"]
+
+
+def test_kiwoom_gets_a_new_token_when_refused(monkeypatch):
+    from quant.trader import brokers
+    b = brokers.KiwoomBroker("k", "s")
+    tokens = iter(["T1", "T2"])
+    monkeypatch.setattr(b, "token", lambda: b._token or setattr(b, "_token", next(tokens)) or b._token)
+    seen = []
+
+    class R:
+        def __init__(self, code, body):
+            self.status_code, self._body, self.content = code, body, b"x"
+            self.ok = code == 200
+
+        def json(self):
+            return self._body
+
+    replies = [R(401, {"return_code": 3, "return_msg": "토큰이 유효하지 않습니다"}), R(200, {"return_code": 0, "ok": 1})]
+
+    def post(url, headers, json, timeout):
+        seen.append(headers["authorization"])
+        return replies.pop(0)
+
+    monkeypatch.setattr(brokers.requests, "post", post)
+    monkeypatch.setattr(brokers.time, "sleep", lambda s: None)
+    assert b.call("/x", "id", {})["ok"] == 1
+    assert seen == ["Bearer T1", "Bearer T2"]
