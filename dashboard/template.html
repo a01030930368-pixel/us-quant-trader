@@ -308,6 +308,14 @@ tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
 .m-stats small { color: var(--dim); font-size: 11.5px; }
 .detail td.l, .detail th.l { text-align: left; }
 .detail tr.bad td { opacity: 0.55; }
+.m-chart { margin: 0 6px 14px; background: var(--panel); border-radius: 12px; padding: 12px 14px 6px; }
+.m-chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.m-chart text { font-size: 11px; fill: var(--sub); font-family: inherit; font-variant-numeric: tabular-nums; }
+.m-chart text.v { fill: var(--fg); font-weight: 600; }
+.m-chart text.up { fill: var(--up); font-weight: 600; }
+.m-chart text.down { fill: var(--down); font-weight: 600; }
+.m-chart .cap { display: flex; gap: 16px; font-size: 12px; color: var(--sub); margin-bottom: 4px; }
+.detail tr.yr td { color: var(--sub); font-weight: 600; }
 .toast {
   position: fixed; right: 24px; bottom: 24px; z-index: 30; max-width: 360px;
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
@@ -413,6 +421,8 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
               <button type="button" id="range-3m" data-range="63" aria-pressed="false">3개월</button>
               <button type="button" id="range-all" data-range="all" aria-pressed="true">전체</button>
             </div>
+            <button type="button" class="ctl mini" id="month-more" hidden aria-label="월별 결산 보기">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 13.5V8.5M6.3 13.5V5M9.7 13.5V7M13 13.5V3"/></svg>월별 결산</button>
             <button type="button" class="ctl mini" id="perf-more" hidden aria-label="수익률 자세히 보기">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.5h4v4M13.5 2.5 8.5 7.5M6.5 13.5h-4v-4M2.5 13.5l5-5"/></svg>자세히</button>
           </div>
@@ -1016,6 +1026,103 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   };
   $("perf-more").addEventListener("click", function () { openTable(perfView); });
 
+  // monthly settlement: balance at each month's start and end, and what the month made or lost
+  function monthRows() {
+    var out = [], prevEnd = initial, prevBench = 0;
+    var thisMonth = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }).slice(0, 7);
+    series.forEach(function (p) {
+      var key = p.date.slice(0, 7), m = out[out.length - 1];
+      if (!m || m.month !== key) {
+        if (m) { prevEnd = m.end; prevBench = m.benchEnd; }
+        m = { month: key, start: prevEnd, benchStart: prevBench, peak: prevEnd, mdd: 0, days: 0, live: false };
+        out.push(m);
+      }
+      m.end = p.equity; m.days += 1; m.live = m.live || !!p.live || key === thisMonth;
+      if (p.bench != null) m.benchEnd = p.bench;
+      m.peak = Math.max(m.peak, p.equity);
+      m.mdd = Math.min(m.mdd, p.equity / m.peak - 1);
+    });
+    out.forEach(function (m) {
+      m.pnl = m.end - m.start;
+      m.ret = m.start ? m.end / m.start - 1 : null;
+      m.bench = m.benchEnd != null && m.benchStart != null ? (1 + m.benchEnd) / (1 + m.benchStart) - 1 : null;
+      if (m.benchEnd == null) m.benchEnd = m.benchStart;
+      m.excess = m.bench == null || m.ret == null ? null : m.ret - m.bench;
+      var tr = TRADES.filter(function (t) { return String(t.date || "").slice(0, 7) === m.month && t.status !== "rejected" && t.status !== "cancelled"; });
+      m.trades = tr.length;
+      m.fee = tr.reduce(function (a, t) { return a + (+t.fee || 0); }, 0);
+    });
+    return out;
+  }
+  function monthLabel(key, short) { var y = key.slice(0, 4), mo = +key.slice(5, 7); return short ? mo + "월" : y + "년 " + mo + "월"; }
+  function monthChart(rows) {
+    var W = 1100, padL = 8, padR = 8, top = 18, h1 = 120, gap = 34, h2 = 86, H = top + h1 + gap + h2 + 22;
+    var n = rows.length, step = (W - padL - padR) / Math.max(n, 1), cx = function (i) { return padL + step * (i + 0.5); };
+    var ends = rows.map(function (m) { return m.end; }).concat([initial]);
+    var lo = Math.min.apply(null, ends), hi = Math.max.apply(null, ends), span = hi - lo || hi * 0.02 || 1;
+    lo -= span * 0.15; hi += span * 0.25; span = hi - lo;
+    var y1 = function (v) { return top + h1 - (v - lo) / span * h1; };
+    var maxAbs = Math.max.apply(null, rows.map(function (m) { return Math.abs(m.pnl); }).concat([1]));
+    var zero = top + h1 + gap + h2 / 2, y2 = function (v) { return zero - v / maxAbs * (h2 / 2 - 12); };
+    var every = Math.ceil(n / 14), compact = function (v) { var a = Math.abs(v); return (v < 0 ? "-" : "") + "$" + (a >= 1e6 ? (a / 1e6).toFixed(2) + "M" : a >= 1e4 ? (a / 1e3).toFixed(1) + "k" : Math.round(a).toLocaleString("en-US")); };
+    var line = rows.map(function (m, i) { return (i ? "L" : "M") + cx(i).toFixed(1) + " " + y1(m.end).toFixed(1); }).join("");
+    var area = n ? line + "L" + cx(n - 1).toFixed(1) + " " + (top + h1) + "L" + cx(0).toFixed(1) + " " + (top + h1) + "Z" : "";
+    var bw = Math.min(46, step * 0.56);
+    var svg = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="월별 잔고와 손익">' +
+      '<line x1="0" x2="' + W + '" y1="' + y1(initial).toFixed(1) + '" y2="' + y1(initial).toFixed(1) + '" stroke="var(--line)" stroke-dasharray="3 4"/>' +
+      '<text x="' + (W - padR) + '" y="' + (y1(initial) - 5).toFixed(1) + '" text-anchor="end">원금 ' + compact(initial) + "</text>" +
+      (n > 1 ? '<path d="' + area + '" fill="var(--fg)" opacity="0.06"/><path d="' + line + '" fill="none" stroke="var(--fg)" stroke-width="2" stroke-linejoin="round"/>' : "") +
+      '<line x1="0" x2="' + W + '" y1="' + zero + '" y2="' + zero + '" stroke="var(--line)"/>';
+    rows.forEach(function (m, i) {
+      var x = cx(i), col = m.pnl > 0 ? "var(--up)" : m.pnl < 0 ? "var(--down)" : "var(--sub)", yb = y2(m.pnl);
+      svg += '<circle cx="' + x.toFixed(1) + '" cy="' + y1(m.end).toFixed(1) + '" r="3.5" fill="var(--panel)" stroke="var(--fg)" stroke-width="2"/>';
+      if (i % every === 0 || i === n - 1) svg += '<text class="v" x="' + x.toFixed(1) + '" y="' + (y1(m.end) - 10).toFixed(1) + '" text-anchor="middle">' + compact(m.end) + "</text>";
+      svg += '<rect x="' + (x - bw / 2).toFixed(1) + '" y="' + Math.min(yb, zero).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + Math.max(1, Math.abs(zero - yb)).toFixed(1) + '" rx="3" fill="' + col + '" opacity="0.85"/>';
+      if (i % every === 0 || i === n - 1) svg += '<text class="' + tone(m.pnl) + '" x="' + x.toFixed(1) + '" y="' + (m.pnl >= 0 ? yb - 5 : yb + 13).toFixed(1) + '" text-anchor="middle">' + (m.pnl > 0 ? "+" : "") + compact(m.pnl) + "</text>";
+      if (i % every === 0 || i === n - 1) svg += '<text x="' + x.toFixed(1) + '" y="' + (H - 4) + '" text-anchor="middle">' + monthLabel(m.month, true) + (m.live ? " (진행 중)" : "") + "</text>";
+    });
+    return '<div class="m-chart"><div class="cap"><span>— 월말 잔고</span><span>▮ 그 달 손익 (빨강 수익 · 파랑 손실)</span></div>' + svg + "</svg></div>";
+  }
+  var monthView = {
+    title: "월별 결산", btn: "month-more", sort: { key: "month", asc: false }, ascKeys: ["month"],
+    foot: function () { return "월초 잔고는 전달 마지막 거래일 장 마감 기준(첫 달은 원금)이에요. 수익률은 그 달 하루하루를 이어 붙인 값이고, 낙폭은 그 달 안에서 가장 많이 빠졌던 정도예요." + (LIVE.on ? " 진행 중인 달은 실시간 가격까지 반영돼요." : " 진행 중인 달은 마지막 기록까지예요."); },
+    draw: function (view, sub, body) {
+      var rows = monthRows();
+      var ups = rows.filter(function (m) { return m.pnl > 0; }).length;
+      sub.textContent = rows.length + "개월 · 수익 " + ups + "달 · 손실 " + rows.filter(function (m) { return m.pnl < 0; }).length + "달";
+      var years = {};
+      rows.forEach(function (m) {
+        var y = m.month.slice(0, 4), Y = years[y] = years[y] || { start: m.start, benchStart: m.benchStart, trades: 0, fee: 0 };
+        Y.end = m.end; Y.benchEnd = m.benchEnd; Y.trades += m.trades; Y.fee += m.fee;
+      });
+      var yr = Object.keys(years).length < 2 ? "" : Object.keys(years).sort().map(function (y) {
+        var Y = years[y], r = Y.start ? Y.end / Y.start - 1 : 0, b = Y.benchEnd != null && Y.benchStart != null ? (1 + Y.benchEnd) / (1 + Y.benchStart) - 1 : null;
+        return '<tr class="yr"><td class="l">' + y + "년</td><td>" + usd(Y.start) + "</td><td>" + usd(Y.end) + "</td>" +
+          '<td class="' + tone(Y.end - Y.start) + '">' + usdSigned(Y.end - Y.start) + '</td><td class="' + tone(r) + '">' + pct(r) + "</td>" +
+          '<td class="' + tone(b) + '">' + pct(b) + '</td><td class="' + tone(b == null ? null : r - b) + '">' + (b == null ? "—" : pct(r - b).replace("%", "%p")) + "</td>" +
+          "<td></td><td>" + Y.trades + "건</td><td>" + usd(Y.fee) + "</td></tr>";
+      }).join("");
+      body.innerHTML = (rows.length ? monthChart(rows) : "") + tableHtml([
+        ["month", "월", "l"], ["start", "월초 잔고"], ["end", "월말 잔고"], ["pnl", "손익"], ["ret", "수익률"],
+        ["bench", bench + " 수익률"], ["excess", bench + " 대비"], ["mdd", "월중 최대 낙폭"], ["trades", "매매"], ["fee", "수수료"]
+      ], view.sort, sortRows(rows.slice(), view.sort).map(function (m) {
+        return '<tr><td class="l"><b>' + monthLabel(m.month) + "</b>" + (m.live ? ' <span class="sub">진행 중</span>' : "") + ' <span class="sub">· ' + m.days + "일</span></td>" +
+          "<td>" + usd(m.start) + "</td><td><b>" + usd(m.end) + "</b></td>" +
+          '<td class="' + tone(m.pnl) + '"><b>' + usdSigned(m.pnl) + "</b></td>" +
+          '<td class="' + tone(m.ret) + '">' + pct(m.ret) + "</td>" +
+          '<td class="' + tone(m.bench) + '">' + pct(m.bench) + "</td>" +
+          '<td class="' + tone(m.excess) + '">' + (m.excess == null ? "—" : pct(m.excess).replace("%", "%p")) + "</td>" +
+          '<td class="' + (m.mdd < 0 ? "down" : "sub") + '">' + pct(m.mdd, 1) + "</td>" +
+          '<td class="sub">' + (m.trades ? m.trades + "건" : "—") + '</td><td class="sub">' + usd(m.fee) + "</td></tr>";
+      }).join(""), yr + '<tr><td class="l">전체</td><td>' + usd(initial) + "</td><td>" + usd(equity) + "</td>" +
+        '<td class="' + tone(equity - initial) + '">' + usdSigned(equity - initial) + '</td><td class="' + tone(totalRet) + '">' + pct(totalRet) + "</td>" +
+        '<td class="' + tone(benchRet) + '">' + pct(benchRet) + '</td><td class="' + tone(benchRet == null ? null : totalRet - benchRet) + '">' + (benchRet == null ? "—" : pct(totalRet - benchRet).replace("%", "%p")) + "</td>" +
+        '<td class="down">' + pct(maxDD, 1) + "</td><td>" + TRADES.filter(function (t) { return t.status !== "rejected" && t.status !== "cancelled"; }).length + "건</td><td>" +
+        usd(TRADES.reduce(function (a, t) { return a + (t.status === "rejected" || t.status === "cancelled" ? 0 : +t.fee || 0); }, 0)) + "</td></tr>");
+    }
+  };
+  $("month-more").addEventListener("click", function () { openTable(monthView); });
+
   // trades: every order with all its fields
   var tradeView = {
     title: "매매 내역 자세히", btn: "trade-more", sort: { key: "time", asc: false }, ascKeys: ["symbol", "side", "status", "sleeve"], side: "all",
@@ -1063,7 +1170,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     }
   };
   $("trade-more").addEventListener("click", function () { openTable(tradeView); });
-  $("perf-more").hidden = !series.length;
+  $("perf-more").hidden = $("month-more").hidden = !series.length;
   $("trade-more").hidden = !TRADES.length;
 
   // ---- live quotes: holdings, KPIs and the chart's last point follow the market ----
