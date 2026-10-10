@@ -28,6 +28,7 @@ def test_command_aliases():
     assert tb.command("/일시정지") == "pause"
     assert tb.command("정지") == "pause"
     assert tb.command("/start") == "help"
+    assert tb.command("/?") == "help" and tb.command("?") == "help" and tb.command("명령어") == "help"
     assert tb.command("hello") is None
     assert tb.command("") is None
 

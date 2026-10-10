@@ -9,7 +9,7 @@
     /status   상태        다음 자동 실행, 마지막 실행 결과, 일시정지 여부
     /pause    일시정지    자동 매매가 주문을 내지 않게 멈춤
     /resume   재개        다시 주문
-    /help     도움말
+    /help     도움말 (/? 나 ? 도 됨)
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ COMMANDS = [
     ("help", "도움말", "명령 목록"),
 ]
 ALIASES = {ko: en for en, ko, _ in COMMANDS} | {
-    "start": "help", "도움": "help", "정지": "pause", "멈춰": "pause", "다시시작": "resume",
+    "start": "help", "?": "help", "？": "help", "명령": "help", "명령어": "help", "도움": "help", "정지": "pause", "멈춰": "pause", "다시시작": "resume",
 }
 MAX_AGE = 600  # seconds; older messages (sent while the PC was off) are ignored
 WEEKDAY_KO = "월화수목금토일"
@@ -117,7 +117,8 @@ def status_text(state: dict, agent: dict, paused: bool) -> str:
 
 
 def help_text() -> str:
-    return "Mintory 명령\n" + "\n".join(f"/{en} ({ko}) {desc}" for en, ko, desc in COMMANDS)
+    return ("Mintory 명령\n" + "\n".join(f"/{en} ({ko}) {desc}" for en, ko, desc in COMMANDS)
+            + "\n\n한국어로 '잔고'처럼 보내도 되고, 언제든 /? 를 보내면 이 목록이 나와요.")
 
 
 def handle(text: str, act: Actions) -> str:
