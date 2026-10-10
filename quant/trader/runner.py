@@ -23,7 +23,7 @@ from pathlib import Path
 import pandas as pd
 
 from quant.data import load_prices
-from quant.strategies import momentum_rotation
+from quant.strategies import momentum_13612, momentum_rotation, tranched
 
 KST = timezone(timedelta(hours=9))
 SAFE = "IEF"
@@ -61,6 +61,18 @@ class TraderConfig:
     min_trade_usd: float = 50.0        # skip tiny rebalancing trades
     max_data_age_days: int = 5         # refuse to trade on stale prices
     state_dir: Path = Path("paper")
+    # Canary + tranches (strategy thread, 2026-10-10). Empty canary and one
+    # tranche = the plain monthly blend above. With canary=("EEM",) each
+    # tranche moves to SAFE while EEM's 13612W momentum is <= 0; tranches=4
+    # splits the money into parts that rebalance at month end, +5, +10 and
+    # +15 trading days (quant.strategies.tranched / canary_gate).
+    canary: tuple[str, ...] = ()
+    tranches: int = 1
+    tranche_spacing: int = 5
+
+    @property
+    def staggered(self) -> bool:
+        return bool(self.canary) or self.tranches > 1
 
     def sleeve_weight(self, sleeve: Sleeve) -> float:
         return self.aggr_share if sleeve.id == "aggressive" else 1 - self.aggr_share
@@ -68,12 +80,21 @@ class TraderConfig:
     @property
     def strategy_id(self) -> str:
         base = "momentum_blend_multi" if self.lookbacks else "momentum_blend"
+        if self.canary:
+            base += "_canary_" + "_".join(c.lower() for c in self.canary)
+        if self.tranches > 1:
+            base += f"_t{self.tranches}"
         return base if self.aggr_share == 0.5 else f"{base}_{round(self.aggr_share * 100)}"
 
     @property
     def strategy_name(self) -> str:
         split = f"{round((1 - self.aggr_share) * 100)}/{round(self.aggr_share * 100)}"
-        return f"혼합 {split} {'멀티기간 ' if self.lookbacks else ''}모멘텀"
+        name = f"혼합 {split} {'멀티기간 ' if self.lookbacks else ''}모멘텀"
+        if self.tranches > 1:
+            name = f"{self.tranches}분할 " + name
+        if self.canary:
+            name = f"{'·'.join(self.canary)} 카나리아 " + name
+        return name
 
     def momentum(self, close: pd.DataFrame) -> pd.DataFrame:
         """Score used for ranking: mean trailing return over `lookbacks`."""
@@ -102,6 +123,50 @@ def sleeve_targets(close: pd.DataFrame, sig: pd.Timestamp, cfg: TraderConfig) ->
     return rows
 
 
+def _completed(close: pd.DataFrame, today: pd.Timestamp) -> pd.DataFrame:
+    """Rows of finished sessions only, plus one placeholder row when the
+    month is still running. A run during US hours can see today's half-day
+    bar, which must not drive a decision; and without the placeholder the
+    last row would look like a month end every day, so tranche 0 would
+    re-decide daily."""
+    px = close[close.index < today.normalize()]
+    nxt = px.index[-1] + pd.offsets.BDay(1)
+    if nxt.to_period("M") == px.index[-1].to_period("M"):
+        px = pd.concat([px, px.iloc[[-1]].set_axis([nxt])])
+    return px
+
+
+def staggered_targets(close: pd.DataFrame, today: pd.Timestamp,
+                      cfg: TraderConfig) -> tuple[list[dict], pd.Timestamp]:
+    """Target weights per sleeve for the canary/tranche strategy, as decided
+    by the latest finished session. Returns (rows, that session's date)."""
+    px = _completed(close, today)
+    last = close.index[close.index < today.normalize()][-1]
+    stable, aggr = SLEEVES
+    params = dict(strategy="canary_gate" if cfg.canary else "momentum_blend",
+                  tranches=cfg.tranches, spacing=cfg.tranche_spacing,
+                  lookback=cfg.lookback, lookbacks=list(cfg.lookbacks) or None,
+                  stable_assets=stable.universe, aggr_assets=aggr.universe, safe=SAFE)
+    if cfg.canary:
+        params["canary"] = list(cfg.canary)
+    rows = []
+    # Sleeve weights are linear in aggr_share, so run each sleeve alone
+    # (0 = stable only, 1 = aggressive only) to keep the sleeve labels.
+    for sl, share in ((stable, 0.0), (aggr, 1.0)):
+        w = tranched(px, aggr_share=share, **params).loc[last]
+        for sym, v in w.items():
+            if v > 1e-9:
+                rows.append({"symbol": sym, "weight": round(float(v) * cfg.sleeve_weight(sl), 6),
+                             "sleeve": sl.id})
+    return rows, last
+
+
+def canary_status(close: pd.DataFrame, sig: pd.Timestamp, cfg: TraderConfig) -> list[dict]:
+    mom = momentum_13612(close.loc[:sig, list(cfg.canary)]).iloc[-1]
+    return [{"symbol": c, "score": round(float(mom[c]), 4), "risk_on": bool(mom[c] > 0)}
+            for c in cfg.canary]
+
+
 def signal_scores(close: pd.DataFrame, sig: pd.Timestamp, cfg: TraderConfig,
                   targets: list[dict]) -> list[dict]:
     chosen = {(t["sleeve"], t["symbol"]) for t in targets}
@@ -111,10 +176,17 @@ def signal_scores(close: pd.DataFrame, sig: pd.Timestamp, cfg: TraderConfig,
             for sl in SLEEVES for sym in sl.universe]
 
 
-def next_rebalance(today: pd.Timestamp) -> dict:
+def next_rebalance(today: pd.Timestamp, cfg: TraderConfig | None = None) -> dict:
     """Approximate: last weekday of this month, then the next weekday
-    (US holidays are not modelled)."""
+    (US holidays are not modelled). With tranches, the next of month end,
+    +spacing, +2*spacing, ... weekdays after it."""
     month_end = today + pd.offsets.BMonthEnd(0)
+    if cfg is not None and cfg.tranches > 1:
+        prev_end = today - pd.offsets.BMonthEnd(1)
+        days = [end + pd.offsets.BDay(k * cfg.tranche_spacing)
+                for end in (prev_end, month_end) for k in range(cfg.tranches)]
+        # the next tranche whose order day (signal day + 1) is today or later
+        month_end = min(d for d in days if d + pd.offsets.BDay(1) >= today.normalize())
     return {"signal_date": str(month_end.date()),
             "order_date": str((month_end + pd.offsets.BDay(1)).date())}
 
@@ -217,7 +289,8 @@ class Runner:
             return self._state(now, meta, alerts=alerts)
 
         if close is None:
-            close = load_prices(DATA_TICKERS, "2009-01-01", use_cache=False).dropna()
+            tickers = sorted(set(DATA_TICKERS) | set(self.cfg.canary))
+            close = load_prices(tickers, "2009-01-01", use_cache=False).dropna()
         last = close.index[-1]
         prices = {t: float(close[t].iloc[-1]) for t in close.columns}
         age = (today - last.normalize()).days
@@ -226,9 +299,13 @@ class Runner:
                            "message": f"가격 데이터가 {age}일 전 것이라 매매하지 않았습니다."})
             return self._state(now, meta, alerts=alerts, prices=prices)
 
-        sig = signal_date(close.index, today)
-        targets = sleeve_targets(close, sig, self.cfg) if sig is not None else []
+        if self.cfg.staggered:
+            targets, sig = staggered_targets(close, today, self.cfg)
+        else:
+            sig = signal_date(close.index, today)
+            targets = sleeve_targets(close, sig, self.cfg) if sig is not None else []
         scores = signal_scores(close, sig, self.cfg, targets) if sig is not None else []
+        canary = canary_status(close, sig, self.cfg) if self.cfg.canary and sig is not None else None
         weights: dict[str, float] = {}
         for t in targets:
             weights[t["symbol"]] = weights.get(t["symbol"], 0.0) + t["weight"]
@@ -240,12 +317,18 @@ class Runner:
                            f"계좌 조회에 실패해 매매하지 않았습니다: {str(e)[:200]}"})
             positions, cash = self._last_holdings()
             return self._state(now, meta, alerts=alerts, positions=positions, cash=cash,
-                               prices=prices, targets=targets, scores=scores, sig=sig)
+                               prices=prices, targets=targets, scores=scores, sig=sig, canary=canary)
         self._reconcile(positions)
         meta.setdefault("started_at", str(today.date()))
         meta.setdefault("initial_capital", cash + sum(p["qty"] * prices.get(s, 0.0)
                                                       for s, p in positions.items()))
-        due = sig is not None and meta.get("last_signal") != str(sig.date())
+        if self.cfg.staggered:
+            # Tranches change on their own days; trade whenever the target
+            # differs from the one last executed.
+            wanted = {k: round(v, 4) for k, v in sorted(weights.items())}
+            due = meta.get("last_weights") != wanted
+        else:
+            due = sig is not None and meta.get("last_signal") != str(sig.date())
 
         if due:
             orders = plan_orders(weights, prices, positions, cash, self.cfg)
@@ -273,7 +356,8 @@ class Runner:
                            "fee": round(res.get("fee", 0.0), 2),
                            "status": res.get("status", "filled" if ok else "rejected"),
                            "order_id": res.get("order_no"),
-                           "sleeve": sleeve_of.get(o["symbol"]), "note": "월간 리밸런싱",
+                           "sleeve": sleeve_of.get(o["symbol"]),
+                           "note": "분할 리밸런싱" if self.cfg.staggered else "월간 리밸런싱",
                            "held_before": positions.get(o["symbol"], {}).get("qty", 0)}
                     if not ok:
                         rec["message"] = res.get("msg", "")
@@ -286,6 +370,8 @@ class Runner:
                 if all_ok:
                     meta["last_signal"] = str(sig.date())
                     meta["last_rebalance"] = str(today.date())
+                    if self.cfg.staggered:
+                        meta["last_weights"] = wanted
                 positions, cash = self.broker.positions(), self.broker.cash_usd()
 
         equity = cash + sum(p["qty"] * prices.get(s, 0.0) for s, p in positions.items())
@@ -294,10 +380,21 @@ class Runner:
                           "benchmark_close": round(prices.get(BENCHMARK, float("nan")), 4)})
         self._write_atomic("meta.json", meta)
         return self._state(now, meta, alerts=alerts, positions=positions, cash=cash,
-                           prices=prices, targets=targets, scores=scores, sig=sig)
+                           prices=prices, targets=targets, scores=scores, sig=sig, canary=canary)
+
+    def _extra_rules(self) -> list[str]:
+        rules = []
+        if self.cfg.tranches > 1:
+            rules.append(f"돈을 {self.cfg.tranches}덩어리로 나눠 월말, " + ", ".join(
+                f"+{k * self.cfg.tranche_spacing}" for k in range(1, self.cfg.tranches))
+                + "거래일에 한 덩어리씩 리밸런싱합니다.")
+        if self.cfg.canary:
+            rules.append(f"리밸런싱 날 {'·'.join(self.cfg.canary)}의 1·3·6·12개월 가중 모멘텀이 "
+                         f"0 이하면 그 덩어리는 전부 {SAFE}로 피합니다.")
+        return rules
 
     def _state(self, now, meta, alerts, positions=None, cash=None, prices=None,
-               targets=None, scores=None, sig=None) -> dict:
+               targets=None, scores=None, sig=None, canary=None) -> dict:
         prices = prices or {}
         if positions is None:
             try:
@@ -310,11 +407,12 @@ class Runner:
             "strategy": {
                 "id": self.cfg.strategy_id,
                 "name": self.cfg.strategy_name,
-                "description": "1·3·6·12개월 수익률의 평균으로 순위를 매겨 안정 바구니는 1등, "
-                               "공격 바구니는 1·2등을 반씩 담습니다. 평균이 0 이하면 IEF."
-                               if self.cfg.lookbacks else
-                               "안정 바구니는 3개월 수익률 1등, 공격 바구니는 1·2등을 반씩. "
-                               "수익률이 마이너스면 IEF.",
+                "description": " ".join([
+                    "1·3·6·12개월 수익률의 평균으로 순위를 매겨 안정 바구니는 1등, "
+                    "공격 바구니는 1·2등을 반씩 담습니다. 평균이 0 이하면 IEF."
+                    if self.cfg.lookbacks else
+                    "안정 바구니는 3개월 수익률 1등, 공격 바구니는 1·2등을 반씩. "
+                    "수익률이 마이너스면 IEF.", *self._extra_rules()]),
                 "sleeves": [{"id": s.id, "name": s.name, "weight": self.cfg.sleeve_weight(s),
                              "universe": s.universe} for s in SLEEVES],
                 "safe_asset": SAFE,
@@ -331,12 +429,14 @@ class Runner:
                           for s, p in positions.items()],
             "targets": targets or [],
             "last_rebalance": meta.get("last_rebalance"),
-            "next_rebalance": next_rebalance(pd.Timestamp(now.date())),
+            "next_rebalance": next_rebalance(pd.Timestamp(now.date()), self.cfg),
             "signal": {"as_of": str(sig.date()) if sig is not None else None,
                        "lookback_days": max(self.cfg.lookbacks or (self.cfg.lookback,)),
                        "lookbacks": list(self.cfg.lookbacks or (self.cfg.lookback,)),
                        "scores": scores or []},
             "alerts": alerts,
         }
+        if self.cfg.canary and canary is not None:
+            state["signal"]["canary"] = canary
         self._write_atomic("state.json", state)
         return state

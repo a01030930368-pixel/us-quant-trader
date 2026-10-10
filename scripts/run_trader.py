@@ -4,6 +4,7 @@
     python scripts/run_trader.py --mode kiwoom     # 키움 모의투자 서버
     python scripts/run_trader.py --check           # 주문 없이 계획만 확인
     python scripts/run_trader.py --check --open    # 잔고만 새로 읽고 Mintory 대시보드 열기
+    python scripts/run_trader.py --strategy canary_eem   # EEM 카나리아 + 4분할 전략
 
 실행이 끝날 때마다 Mintory 대시보드(reports/dashboard.html)를 새로 만듭니다.
 매매를 즉시 멈추려면 paper 폴더에 STOP 이라는 빈 파일을 만드세요.
@@ -21,17 +22,26 @@ from quant.trader.runner import Runner, TraderConfig  # noqa: E402
 from scripts.kiwoom_mock_check import load_env  # noqa: E402
 
 
+# Strategy presets selectable with --strategy (TraderConfig fields).
+STRATEGIES = {
+    "multi": {},
+    "canary_eem": {"canary": ("EEM",), "tranches": 4},
+}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["sim", "kiwoom"], default="sim")
     ap.add_argument("--check", action="store_true", help="주문 없이 계획만 출력")
     ap.add_argument("--aggr-share", type=float, default=0.5)
+    ap.add_argument("--strategy", choices=sorted(STRATEGIES), default="multi",
+                    help="multi = 월 1회 멀티기간 모멘텀(기본), canary_eem = EEM 카나리아 + 4분할")
     ap.add_argument("--sim-cash", type=float, default=10_000.0, help="가상 계좌 시작금(USD)")
     ap.add_argument("--open", action="store_true", help="끝나면 Mintory 대시보드를 브라우저로 열기")
     ap.add_argument("--no-dashboard", action="store_true", help="대시보드를 새로 만들지 않음")
     args = ap.parse_args()
 
-    cfg = TraderConfig(aggr_share=args.aggr_share)
+    cfg = TraderConfig(aggr_share=args.aggr_share, **STRATEGIES[args.strategy])
     if args.mode == "sim":
         broker = SimBroker(cfg.state_dir / "sim_account.json", starting_cash=args.sim_cash)
     else:
