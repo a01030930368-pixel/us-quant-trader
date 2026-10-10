@@ -56,8 +56,9 @@ STARTUP_NAME = "Mintory agent.bat"
 WAKE_TASK = "Mintory 자동 실행"
 WAKE_AT = (23, 40)         # KST, a few minutes before RUN_AT
 AWAKE_BEFORE = timedelta(minutes=20)
-WATCHED = [Path(__file__).resolve(), ROOT / "dashboard" / "build.py",
-           ROOT / "quant" / "telegram_bot.py", ROOT / "quant" / "notify.py"]
+# Restart when any code this process imports changes (quant/live.py serves the
+# quotes, quant/readiness.py the checklist, ...). quant/trader runs in a subprocess.
+WATCHED = [Path(__file__).resolve(), ROOT / "dashboard" / "build.py", *sorted((ROOT / "quant").glob("*.py"))]
 
 # What each button runs. Both use the Kiwoom mock account; there is no live mode here.
 JOBS = {
