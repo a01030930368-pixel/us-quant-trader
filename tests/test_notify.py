@@ -116,3 +116,14 @@ def test_preview_message():
     assert "10/13(화) 장 마감 가격 기준" in text and "일시정지" not in text
     assert "⏸" in preview_message(pv, paused=True)
     assert preview_message({**pv, "orders": []}) is None
+
+
+def test_rehearsal_message():
+    state = {"cash": 1000.0, "alerts": [], "positions": [{"qty": 2, "last_price": 50.0}],
+             "planned_orders": [{"side": "buy", "symbol": "QQQ", "qty": 3, "value": 1500.0}]}
+    text = notify.rehearsal_message("ok", state)
+    assert "리허설" in text and "🔴 매수 QQQ 3주" in text and "$1,000.00" in text and "$100.00" in text
+    assert "주문은 하나도 나가지 않았어요" in text
+    assert notify.rehearsal_message("ok", {"cash": 1.0, "alerts": []}) is None          # quiet night
+    failed = notify.rehearsal_message("error (exit 1)", state)
+    assert "실패" in failed and "QQQ" not in failed                                     # stale plan hidden

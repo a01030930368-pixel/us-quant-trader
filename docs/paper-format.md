@@ -74,6 +74,8 @@
 | `alerts` | | `level`: `info` · `warn` · `error` |
 | `backtest` | | 같은 전략의 백테스트 비교. `{from, cost_bps, series: {날짜: 평가금액}}`. `from`(첫 기록일)의 실제 평가금액에서 시작해, 전날 장 마감 목표 비중으로 다음 날 수익을 받고 회전율×`cost_bps`를 뺀 값. 날짜는 `equity.jsonl`과 같음 |
 | `preview` | | 다음 리밸런싱 미리보기. `{signal_date, order_date, as_of, weights: {종목: 비중}, orders: [{symbol, side, qty, ref_price, value}]}`. `as_of`(마지막 장 마감) 가격이 신호일까지 그대로라고 가정한 예상치. 오늘이 주문일이면 그다음 리밸런싱 |
+| `fx` | | 원/달러 환율 `{usdkrw, as_of}`. 실행 때 야후(`KRW=X`)에서 받은 값. 원화 표시와 양도세 추정용이고 매매 판단에는 쓰지 않음. 못 받은 날은 이전 값 유지 |
+| `planned_orders` | | 점검(`--check`) 실행에서만. 리밸런싱 날이면 낼 주문 `[{symbol, side, qty, ref_price, value}]`. 실계좌 리허설(`paper/rehearsal/state.json`)이 이걸로 예정 주문을 보여 줌 |
 
 ## trades.jsonl (한 줄 = 주문 하나)
 
@@ -84,6 +86,7 @@
 - `side`: `buy` · `sell`
 - `status`: `filled` · `partial` · `pending` · `rejected` · `cancelled` (거부·취소면 `message`에 사유)
 - `date`는 미국 거래일 기준, `time`은 실제 주문 시각입니다.
+- `fx`(있으면)는 주문한 날 원/달러 환율. 양도세 추정에서 원화 환산에 씁니다.
 - 키움은 체결가와 수수료를 따로 알려주지 않습니다. 그래서 한 번에 낸 주문이 모두 체결되면 `fee`를 현금 변화로 계산해 채웁니다(주문 전 현금 − 지금 현금 − 매수금액 + 매도금액을 거래금액 비율로 나눔). 그 전까지는 0입니다.
 
 ## equity.jsonl (한 줄 = 거래일 하나)
@@ -94,6 +97,7 @@
 
 - `equity` = 현금 + 보유 종목 평가금액 (그날 종가 기준)
 - `benchmark_close`는 `state.benchmark`(SPY)의 그날 종가. 대시보드가 첫날 대비로 바꿔 비교합니다.
+- `usdkrw`(있으면)는 그날 원/달러 환율.
 
 ## agent.json (선택)
 

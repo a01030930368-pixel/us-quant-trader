@@ -22,11 +22,25 @@ from pathlib import Path
 
 import pandas as pd
 
+from quant import market_calendar as mc
 from quant.data import load_prices
 from quant.strategies import momentum_13612, momentum_blend, momentum_rotation, tranched
 
 KST = timezone(timedelta(hours=9))
 SAFE = "IEF"
+
+
+def fetch_usdkrw() -> float | None:
+    """The latest USD/KRW close from Yahoo ("KRW=X"), or None. Only for showing
+    balances and estimating tax in won; never used for trading decisions."""
+    try:
+        import yfinance as yf
+        raw = yf.download("KRW=X", period="10d", interval="1d", progress=False, auto_adjust=False)
+        col = raw["Close"].dropna()
+        val = float(col.iloc[-1, 0] if getattr(col, "ndim", 1) == 2 else col.iloc[-1])
+        return round(val, 2) if 500 < val < 5000 else None
+    except Exception:  # noqa: BLE001 - won display is optional
+        return None
 BENCHMARK = "SPY"
 
 
@@ -136,7 +150,7 @@ def _completed(close: pd.DataFrame, today: pd.Timestamp) -> pd.DataFrame:
     last row would look like a month end every day, so tranche 0 would
     re-decide daily."""
     px = close[close.index < today.normalize()]
-    nxt = px.index[-1] + pd.offsets.BDay(1)
+    nxt = px.index[-1] + mc.bday()
     if nxt.to_period("M") == px.index[-1].to_period("M"):
         px = pd.concat([px, px.iloc[[-1]].set_axis([nxt])])
     return px
@@ -222,18 +236,18 @@ def signal_scores(close: pd.DataFrame, sig: pd.Timestamp, cfg: TraderConfig,
 
 
 def next_rebalance(today: pd.Timestamp, cfg: TraderConfig | None = None) -> dict:
-    """Approximate: last weekday of this month, then the next weekday
-    (US holidays are not modelled). With tranches, the next of month end,
-    +spacing, +2*spacing, ... weekdays after it."""
-    month_end = today + pd.offsets.BMonthEnd(0)
+    """Last US trading day of this month, then the next trading day (NYSE
+    holidays included, see quant.market_calendar). With tranches, the next of
+    month end, +spacing, +2*spacing, ... trading days after it."""
+    month_end = today + mc.bmonth_end() * 0
     if cfg is not None and cfg.tranches > 1:
-        prev_end = today - pd.offsets.BMonthEnd(1)
-        days = [end + pd.offsets.BDay(k * cfg.tranche_spacing)
+        prev_end = today - mc.bmonth_end()
+        days = [end + mc.bday() * (k * cfg.tranche_spacing)
                 for end in (prev_end, month_end) for k in range(cfg.tranches)]
         # the next tranche whose order day (signal day + 1) is today or later
-        month_end = min(d for d in days if d + pd.offsets.BDay(1) >= today.normalize())
+        month_end = min(d for d in days if d + mc.bday() >= today.normalize())
     return {"signal_date": str(month_end.date()),
-            "order_date": str((month_end + pd.offsets.BDay(1)).date())}
+            "order_date": str((month_end + mc.bday()).date())}
 
 
 def preview_rebalance(close: pd.DataFrame, today: pd.Timestamp, cfg: TraderConfig,
@@ -243,11 +257,11 @@ def preview_rebalance(close: pd.DataFrame, today: pd.Timestamp, cfg: TraderConfi
     dropped and the last close is carried forward to the signal day."""
     nxt = next_rebalance(today, cfg)
     if nxt["order_date"] <= str(today.date()):  # today's trade is the run itself; show the one after
-        nxt = next_rebalance(today + pd.offsets.BDay(1), cfg)
+        nxt = next_rebalance(today + mc.bday(), cfg)
     sig = pd.Timestamp(nxt["signal_date"])
     px = close[close.index < today.normalize()]
     if sig > px.index[-1]:
-        future = pd.bdate_range(px.index[-1] + pd.offsets.BDay(1), sig)
+        future = pd.date_range(px.index[-1] + mc.bday(), sig, freq=mc.bday())
         px = pd.concat([px, pd.DataFrame([px.iloc[-1].values] * len(future), index=future, columns=px.columns)])
     w = model_weights(px.loc[:sig], cfg).loc[sig] / (1 - cfg.cash_buffer)
     weights = {t: round(float(v), 4) for t, v in w.items() if v > 1e-9}
@@ -284,6 +298,10 @@ class Runner:
         self.notify = notify
         self.dir = Path(self.cfg.state_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
+        # USD/KRW for the won view and the tax estimate. Fetched only for real runs
+        # (tests pass prices in and may set this to a lambda).
+        self.fx_source = None
+        self.fx: float | None = None
 
     # -- files ----------------------------------------------------------------
     def _read(self, name: str) -> dict:
@@ -435,6 +453,7 @@ class Runner:
             execute: bool = True) -> dict:
         now = (now or datetime.now(timezone.utc)).astimezone(KST)
         today = pd.Timestamp(now.date())
+        self.planned = None  # a --check run records the orders it would send
         meta = self._read("meta.json")
         alerts: list[dict] = []
 
@@ -442,9 +461,12 @@ class Runner:
             alerts.append({"level": "error", "message": "STOP 파일이 있어 매매를 멈췄습니다."})
             return self._state(now, meta, alerts=alerts)
 
+        fx_source = self.fx_source
         if close is None:
             tickers = sorted(set(DATA_TICKERS) | set(self.cfg.canary))
             close = load_prices(tickers, "2009-01-01", use_cache=False).dropna()
+            fx_source = fx_source or fetch_usdkrw
+        self.fx = fx_source() if fx_source else None
         last = close.index[-1]
         prices = {t: float(close[t].iloc[-1]) for t in close.columns}
         age = (today - last.normalize()).days
@@ -495,6 +517,7 @@ class Runner:
             if blocked:
                 alerts.append({"level": "error", "message": blocked})
             elif not execute:
+                self.planned = orders
                 for o in orders:
                     alerts.append({"level": "info", "message":
                                    f"점검 모드 - {o['side']} {o['symbol']} {o['qty']}주 예정"})
@@ -515,6 +538,7 @@ class Runner:
                            "order_id": res.get("order_no"),
                            "sleeve": sleeve_of.get(o["symbol"]),
                            "note": "분할 리밸런싱" if self.cfg.staggered else "월간 리밸런싱",
+                           **({"fx": self.fx} if self.fx else {}),
                            "held_before": positions.get(o["symbol"], {}).get("qty", 0)}
                     if not ok:
                         rec["message"] = res.get("msg", "")
@@ -536,7 +560,8 @@ class Runner:
         equity = cash + sum(p["qty"] * prices.get(s, 0.0) for s, p in positions.items())
         self._equity_row({"date": str(last.date()), "equity": round(equity, 2),
                           "cash": round(cash, 2),
-                          "benchmark_close": round(prices.get(BENCHMARK, float("nan")), 4)})
+                          "benchmark_close": round(prices.get(BENCHMARK, float("nan")), 4),
+                          **({"usdkrw": self.fx} if self.fx else {})})
         self._write_atomic("meta.json", meta)
         preview = None
         try:
@@ -621,6 +646,13 @@ class Runner:
             backtest = self._read("state.json").get("backtest")
         if backtest:
             state["backtest"] = backtest
+        fx = {"usdkrw": self.fx, "as_of": now.isoformat(timespec="seconds")} if getattr(self, "fx", None) \
+            else self._read("state.json").get("fx")
+        if fx:
+            state["fx"] = fx
+        if getattr(self, "planned", None) is not None:
+            state["planned_orders"] = [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in o.items()}
+                                       for o in self.planned]
         if preview is None:
             preview = self._read("state.json").get("preview")
         if preview:

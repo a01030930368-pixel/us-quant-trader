@@ -60,12 +60,16 @@ AWAKE_BEFORE = timedelta(minutes=20)
 # quotes, quant/readiness.py the checklist, ...). quant/trader runs in a subprocess.
 WATCHED = [Path(__file__).resolve(), ROOT / "dashboard" / "build.py", *sorted((ROOT / "quant").glob("*.py"))]
 
-# What each button runs. Both use the Kiwoom mock account; there is no live mode here.
+# What each job runs. Trading uses the Kiwoom mock account; there is no live order mode here.
 JOBS = {
     "refresh": ["--mode", "kiwoom", "--check"],   # read balances only, never orders
     "run": ["--mode", "kiwoom"],                  # the same run as the 23:45 schedule
+    # live-account rehearsal: reads the real account, records planned orders, never orders
+    "rehearsal": ["--rehearsal", "--check", "--no-dashboard"],
 }
-JOB_NAMES = {"refresh": "잔고 새로고침", "run": "매매 실행", "auto": "자동 매매 실행"}
+JOB_NAMES = {"refresh": "잔고 새로고침", "run": "매매 실행", "auto": "자동 매매 실행",
+             "rehearsal": "실계좌 리허설"}
+READ_ONLY_JOBS = ("refresh", "rehearsal")
 
 
 def session_day(now: datetime) -> str:
@@ -77,7 +81,9 @@ def session_day(now: datetime) -> str:
 
 
 def is_trading_evening(day: str) -> bool:
-    return datetime.fromisoformat(day).weekday() < 5  # Mon-Fri KST = US Mon-Fri
+    """The KST evening of `day` holds a US session (same date: Mon-Fri, not an NYSE holiday)."""
+    from quant.market_calendar import is_trading_day
+    return is_trading_day(date.fromisoformat(day))
 
 
 def due_now(now: datetime, last_day: str | None) -> bool:
@@ -187,11 +193,10 @@ def make_backup(day: str) -> None:
 
 
 def preview_due(day: str, preview: dict | None, sent: str | None) -> str | None:
-    """The order date to warn about when the rebalance is the next weekday after `day`."""
+    """The order date to warn about when the rebalance is the next trading day after `day`."""
+    from quant.market_calendar import next_trading_day
     order = (preview or {}).get("order_date")
-    nxt = date.fromisoformat(day) + timedelta(days=1)
-    while nxt.weekday() >= 5:
-        nxt += timedelta(days=1)
+    nxt = next_trading_day(date.fromisoformat(day))
     return order if order == nxt.isoformat() and order != sent else None
 
 
@@ -262,10 +267,10 @@ _job_lock = threading.Lock()
 _job: dict = {"name": None, "started": None}
 
 
-def _run_job(name: str) -> str:
+def _run_job(name: str, notify_done: bool = True) -> str:
     """Run a job while holding _job_lock; returns "ok" or an error text."""
     _job.update(name=name, started=now_iso())
-    update_state(agent="trading" if name != "refresh" else "refreshing", job=name,
+    update_state(agent="trading" if name not in READ_ONLY_JOBS else "refreshing", job=name,
                  checked_at=_job["started"])
     log(f"{JOB_NAMES[name]} 시작")
     trades_before = count_lines(PAPER / "trades.jsonl")
@@ -275,7 +280,7 @@ def _run_job(name: str) -> str:
     except Exception as e:  # noqa: BLE001 - a failed run must not kill the agent
         result = f"error ({e})"
     log(f"{JOB_NAMES[name]} 종료: {result}")
-    if name != "refresh":
+    if name not in READ_ONLY_JOBS and notify_done:
         from quant import notify
         if notify.notify_run(name, result, PAPER, trades_before):
             log("휴대폰 알림 보냄")
@@ -283,6 +288,111 @@ def _run_job(name: str) -> str:
                  last_job={"name": name, "finished": now_iso(), "result": result})
     _job.update(name=None, started=None)
     return result
+
+
+# -- automatic retry of a failed nightly run ------------------------------------
+RETRY_GAP = timedelta(minutes=10)
+MAX_RETRIES = 3
+# Run alerts that mean "nothing was traded because something outside was down".
+RETRY_ALERTS = ("계좌 조회에 실패", "가격 데이터가")
+
+
+def retry_reason(result: str, alerts: list[dict], new_trades: int) -> str | None:
+    """Why the run is worth trying again, or None. Never after orders went out:
+    the next nightly run reconciles those against the target instead."""
+    if new_trades:
+        return None
+    if result != "ok":
+        return result
+    for a in alerts:
+        msg = str(a.get("message", ""))
+        if a.get("level") == "error" and msg.startswith(RETRY_ALERTS):
+            return msg[:120]
+    return None
+
+
+def in_run_window(t: datetime) -> bool:
+    t = t.astimezone(KST)
+    return t.hour < CATCHUP_UNTIL or (t.hour, t.minute) >= RUN_AT
+
+
+def retry_message(why: str, at: datetime, attempt: int) -> str:
+    return (f"⚠️ 자동 매매가 실패했어요\n\n❗ {why}\n\n"
+            f"🔁 {at:%H:%M}에 다시 시도할게요 ({attempt}/{MAX_RETRIES}).\n"
+            "그래도 안 되면 결과를 다시 알려 드려요.")
+
+
+def run_auto(now: datetime, attempt: int = 0) -> str:
+    """The nightly run, retried up to MAX_RETRIES times RETRY_GAP apart inside the
+    run window when it failed before trading (Kiwoom or price data down)."""
+    from quant import notify
+    day = session_day(now)
+    before = count_lines(PAPER / "trades.jsonl")
+    with _job_lock:  # waits for a button run to finish first
+        result = _run_job("auto", notify_done=False)
+    alerts = _read_json(PAPER / "state.json").get("alerts") or []
+    why = retry_reason(result, alerts, count_lines(PAPER / "trades.jsonl") - before)
+    at = datetime.now(KST) + RETRY_GAP
+    if why and attempt < MAX_RETRIES and session_day(at) == day and in_run_window(at):
+        update_state(retry={"day": day, "attempt": attempt + 1, "at": at.isoformat(timespec="seconds"),
+                            "why": why})
+        log(f"자동 매매 다시 시도 예정 {at:%H:%M} ({attempt + 1}/{MAX_RETRIES}): {why}")
+        if attempt == 0:
+            notify.send(retry_message(why, at, attempt + 1))
+    else:
+        update_state(retry=None)
+        if notify.notify_run("auto", result, PAPER, before):
+            log("휴대폰 알림 보냄")
+    update_state(last_day=day, last_run=now.isoformat(timespec="seconds"), last_result=result)
+    send_preview(day)
+    if not read_state().get("retry"):
+        rehearse(day)
+    return result
+
+
+# -- live-account rehearsal (never orders) ----------------------------------------
+REHEARSAL = PAPER / "rehearsal"
+
+
+def rehearsal_on(env: dict) -> bool:
+    """Run the nightly rehearsal when the live keys exist, unless .env REHEARSAL=0."""
+    keys = env.get("KIWOOM_LIVE_APP_KEY") and env.get("KIWOOM_LIVE_SECRET_KEY")
+    return bool(keys) and env.get("REHEARSAL", "1") != "0"
+
+
+def rehearse(day: str, force: bool = False) -> str | None:
+    """After the nightly mock run: read the real account with the live keys and
+    record what tonight's strategy would order there (paper/rehearsal/state.json).
+    Read-only twice over (a read-only broker and a --check run). Once per evening."""
+    from quant import notify
+    if not force and (not rehearsal_on(notify.read_env()) or read_state().get("rehearsal_day") == day):
+        return None
+    with _job_lock:
+        result = _run_job("rehearsal")
+    # The real account keeps the same planned orders night after night until live
+    # trading starts, so the phone hears about a plan only when it changes.
+    plan = rehearsal_plan(result, _read_json(REHEARSAL / "state.json"))
+    if plan != read_state().get("rehearsal_plan") and notify.notify_rehearsal(result, REHEARSAL):
+        log("리허설 결과 알림 보냄")
+    update_state(rehearsal_day=day, rehearsal_plan=plan)
+    return result
+
+
+def rehearsal_plan(result: str, state: dict) -> str:
+    """A short fingerprint of the rehearsal outcome: failure, blocking alerts and
+    which symbols it would buy or sell (not quantities, which move with prices)."""
+    if result != "ok":
+        return "failed"
+    errors = sorted(str(a.get("message", ""))[:30] for a in state.get("alerts") or [] if a.get("level") == "error")
+    orders = sorted(f"{o.get('side')}:{o.get('symbol')}" for o in state.get("planned_orders") or [])
+    return "|".join(errors + orders)
+
+
+def retry_due(now: datetime, retry: dict | None) -> int | None:
+    """The attempt number to run now, or None."""
+    if not retry or retry.get("day") != session_day(now):
+        return None
+    return retry["attempt"] if now >= datetime.fromisoformat(retry["at"]) else None
 
 
 def start_job(name: str) -> bool:
@@ -391,6 +501,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/pause":
             set_paused(bool(body.get("paused", True)))
             return self._json(200, control_state())
+        if path == "/api/rehearsal":  # live-account rehearsal: reads balances, never orders
+            if rehearse_now() is None:
+                return self._json(409, {"error": f"{JOB_NAMES.get(_job['name'], '다른 작업')} 중이에요. "
+                                                 "끝나면 다시 눌러주세요.", **readiness_report()})
+            return self._json(200, readiness_report())
         if path == "/api/live-key-check":  # read-only balance query, never an order
             from quant import notify, readiness
             readiness.check_live_keys(notify.read_env(), PAPER)
@@ -452,13 +567,16 @@ def loop(restarted: bool = False) -> None:
         state = read_state()
         now = datetime.now(KST)
         check_missed(now, state)
-        stay_awake(should_stay_awake(now, state.get("last_day")))
+        retry = state.get("retry")
+        if retry and retry.get("day") != session_day(now):
+            update_state(retry=None)  # the window closed; tomorrow's run takes over
+            retry = None
+        stay_awake(bool(retry) or should_stay_awake(now, state.get("last_day")))
         if due_now(now, state.get("last_day")):
-            with _job_lock:  # waits for a button run to finish first
-                result = _run_job("auto")
-            update_state(last_day=session_day(now), last_run=now.isoformat(timespec="seconds"),
-                         last_result=result)
-            send_preview(session_day(now))
+            run_auto(now)
+            state = read_state()
+        elif (attempt := retry_due(now, retry)) is not None:
+            run_auto(now, attempt)
             state = read_state()
         week = weekly_due(now, state.get("weekly_sent"))
         if week:
@@ -505,6 +623,16 @@ def check_missed(now: datetime, state: dict) -> list[str]:
     return days
 
 
+def rehearse_now() -> str | None:
+    """The rehearsal from the readiness button; None when another run holds the lock."""
+    if not _job_lock.acquire(blocking=False):
+        return None
+    try:
+        return _run_job("rehearsal")
+    finally:
+        _job_lock.release()
+
+
 def refresh_now() -> str | None:
     """Balance check for the phone; None when another run holds the lock."""
     if not _job_lock.acquire(blocking=False):
@@ -516,10 +644,11 @@ def refresh_now() -> str | None:
 
 
 def start_bot() -> None:
-    from quant import live, telegram_bot
+    from quant import live, tax, telegram_bot
     act = telegram_bot.Actions(
         state=lambda: _read_json(PAPER / "state.json"), agent=read_state, readiness=readiness_report,
         paused=lambda: STOP.exists(), set_paused=set_paused, refresh=refresh_now,
+        tax=lambda: tax.from_paper(PAPER),
         quotes=lambda syms: live.quotes(live.clean_symbols(",".join(syms))))
     threading.Thread(target=telegram_bot.serve, daemon=True, kwargs={
         "act": act, "get_offset": lambda: read_state().get("tg_offset"),
