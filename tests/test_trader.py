@@ -497,8 +497,23 @@ def test_runner_writes_backtest_and_keeps_it_when_paused(tmp_path, close):
     assert st["backtest"]["cost_bps"] == 10.0
     assert set(st["backtest"]["series"]) == {"2026-10-06", "2026-10-07"}
     (r.dir / "STOP").write_text("x")
-    paused = r.run(close=close, now=datetime(2026, 10, 8, 15, tzinfo=timezone.utc))
-    assert paused["backtest"] == st["backtest"]
+    paused = r.run(close=close.loc[:"2026-10-08"], now=datetime(2026, 10, 8, 15, tzinfo=timezone.utc))
+    assert set(paused["backtest"]["series"]) == {"2026-10-06", "2026-10-07", "2026-10-08"}
+    # early exits (stale prices) still keep the last comparison
+    stale = r.run(close=close.loc[:"2026-09-30"], now=datetime(2026, 10, 9, 15, tzinfo=timezone.utc))
+    assert stale["backtest"] == paused["backtest"]
+
+
+def test_paused_run_records_the_day_without_orders(tmp_path, close):
+    r = make_runner(tmp_path)
+    r.run(close=close.loc[:"2026-10-06"], now=datetime(2026, 10, 6, 15, tzinfo=timezone.utc))
+    n = len(trades(r))
+    (r.dir / "STOP").write_text("x")
+    s = r.run(close=close.loc[:"2026-10-07"], now=datetime(2026, 10, 7, 15, tzinfo=timezone.utc))
+    assert "STOP" in errors(s) and len(trades(r)) == n
+    assert not any("점검 모드" in a["message"] for a in s["alerts"])
+    rows = (r.dir / "equity.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(x)["date"] for x in rows] == ["2026-10-06", "2026-10-07"]
 
 
 # -- next rebalance preview ----------------------------------------------------

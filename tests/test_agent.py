@@ -257,3 +257,36 @@ def test_send_preview_once(tmp_path, monkeypatch):
     agent.send_preview("2026-10-14")
     agent.send_preview("2026-10-14")
     assert sent == [tmp_path] and agent.read_state()["preview_sent"] == "2026-10-15"
+
+
+def test_close_refresh_due_after_each_us_session():
+    assert agent.close_refresh_due(k(2026, 10, 13, 6, 59), None) is None              # Tue before 7
+    assert agent.close_refresh_due(k(2026, 10, 13, 7, 0), None) == "2026-10-13"       # after Mon session
+    assert agent.close_refresh_due(k(2026, 10, 13, 9, 0), "2026-10-13") is None       # done today
+    assert agent.close_refresh_due(k(2026, 10, 17, 8, 0), None) == "2026-10-17"       # Sat: Fri session
+    assert agent.close_refresh_due(k(2026, 10, 18, 8, 0), None) is None               # Sun
+    assert agent.close_refresh_due(k(2026, 10, 19, 8, 0), None) is None               # Mon: no Sun session
+    assert agent.close_refresh_due(k(2026, 10, 13, 23, 50), None) is None             # tonight's run instead
+
+
+def test_failure_reason_picks_the_error_message():
+    out = ("Traceback (most recent call last):\n  File \"x.py\", line 1\n"
+           "RuntimeError: .env 에 KIWOOM_APP_KEY, KIWOOM_SECRET_KEY 가 없습니다.\n")
+    assert agent.failure_reason(out) == ".env 에 KIWOOM_APP_KEY, KIWOOM_SECRET_KEY 가 없습니다."
+    assert agent.failure_reason("requests.exceptions.ConnectionError: 연결 실패\n") == "연결 실패"
+    assert agent.failure_reason("뭔가 잘못됨\n\n") == "뭔가 잘못됨"
+    assert agent.failure_reason("") == ""
+
+
+def test_failed_job_keeps_its_reason(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "STATE", tmp_path / "agent.json")
+    monkeypatch.setattr(agent, "LOG", tmp_path / "agent.log")
+    monkeypatch.setattr(agent, "PAPER", tmp_path)
+
+    def boom(args):
+        with open(agent.LOG, "a", encoding="utf-8") as f:
+            f.write("RuntimeError: 키움 서버에 연결하지 못했습니다\n")
+        return 1
+    monkeypatch.setattr(agent, "run_trader", boom)
+    assert agent._run_job("refresh") == "error (exit 1)"
+    assert agent.read_state()["last_job"]["reason"] == "키움 서버에 연결하지 못했습니다"

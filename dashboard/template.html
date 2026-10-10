@@ -455,7 +455,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 2.8 3.8v4c0 3.1 2.2 5.4 5.2 6.4 3-1 5.2-3.3 5.2-6.4v-4z"/><path d="m5.6 8 1.7 1.7 3.2-3.4"/></svg>
         <span>실계좌 점검</span>
       </button>
-      <button type="button" class="ctl" id="btn-pause" title="누르면 그 뒤로 주문을 내지 않아요. 자동 실행도 멈춰요.">
+      <button type="button" class="ctl" id="btn-pause" title="누르면 그 뒤로 주문을 내지 않아요. 잔고와 수익 기록은 계속 남겨요.">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4" y="3" width="2.6" height="10" rx=".8"/><rect x="9.4" y="3" width="2.6" height="10" rx=".8"/></svg>
         <span>일시정지</span>
       </button>
@@ -645,8 +645,14 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   var mdhm = function (iso) { var m = /^\d{4}-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso || ""); return m ? (+m[1]) + "/" + (+m[2]) + " " + m[3] + ":" + m[4] : ""; };
   if (AG && AG.next_run) info.push("다음 자동 실행 " + mdhm(AG.next_run));
   if (AG && AG.last_run) {
-    if (AG.last_result && AG.last_result !== "ok") issues.push("마지막 자동 실행 실패 (" + mdhm(AG.last_run) + " · " + AG.last_result + ")");
+    if (AG.last_result && AG.last_result !== "ok") issues.push("마지막 자동 실행 실패 (" + mdhm(AG.last_run) + ")" + (AG.last_reason ? " · " + AG.last_reason : ""));
     else info.push("마지막 실행 " + mdhm(AG.last_run) + " OK");
+  }
+  // 버튼(잔고 새로고침·지금 매매 실행)이나 아침 장 마감 기록이 실패했으면 다음 작업이 성공할 때까지 표시
+  var LJ = (DATA.control && DATA.control.last_job) || (AG && AG.last_job) || null;
+  if (LJ && LJ.name !== "auto" && LJ.result && LJ.result !== "ok") {
+    issues.push((LJ.name === "run" ? "지금 매매 실행" : "잔고 새로고침") + " 실패 (" + mdhm(LJ.finished) + ")" +
+      (LJ.reason ? " · " + LJ.reason : "") + " · 화면 숫자는 그 전 기록이에요");
   }
   if (AG && AG.missed && AG.missed.length) {
     var mdKo = function (d) { var dt = new Date(d + "T00:00:00"); return (+d.slice(5, 7)) + "/" + (+d.slice(8, 10)) + "(" + "일월화수목금토"[dt.getDay()] + ")"; };
@@ -1523,7 +1529,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       });
       btnPause.classList.toggle("on", !!c.paused);
       btnPause.innerHTML = (c.paused ? ICON_PLAY : ICON_PAUSE) + "<span>" + (c.paused ? "다시 시작" : "일시정지") + "</span>";
-      btnPause.title = c.paused ? "누르면 다시 주문을 낼 수 있어요." : "누르면 그 뒤로 주문을 내지 않아요. 자동 실행도 멈춰요.";
+      btnPause.title = c.paused ? "누르면 다시 주문을 낼 수 있어요." : "누르면 그 뒤로 주문을 내지 않아요. 잔고와 수익 기록은 계속 남겨요.";
       LED.paused = !!c.paused;
       paintLed();
     };
@@ -1533,8 +1539,8 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
         paint(c);
         if (wasBusy && !c.busy) {
           var lj = c.last_job || {};
-          if (lj.result && lj.result !== "ok") toast((JOBS[lj.name] || "작업").replace(" 중…", "") + "에 실패했어요. 자세한 내용은 paper/logs/agent.log에 있어요.");
-          setTimeout(function () { location.reload(); }, lj.result && lj.result !== "ok" ? 2500 : 0);
+          if (lj.result && lj.result !== "ok") toast((JOBS[lj.name] || "작업").replace(" 중…", "") + "에 실패했어요." + (lj.reason ? " " + lj.reason : "") + " 오른쪽 위 빨간 불을 누르면 다시 볼 수 있어요.");
+          setTimeout(function () { location.reload(); }, lj.result && lj.result !== "ok" ? 6000 : 0);
           return;
         }
         wasBusy = !!c.busy;
