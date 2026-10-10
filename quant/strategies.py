@@ -260,7 +260,7 @@ def momentum_13612(prices: pd.DataFrame) -> pd.DataFrame:
 
 
 def canary_gate(prices: pd.DataFrame, canary: list[str] | None = None,
-                safe: str | None = "IEF",
+                safe: str | None = "IEF", signal: str = "13612W",
                 strategy: str = "momentum_blend", **params) -> pd.DataFrame:
     """Defensive Asset Allocation style breadth gate on a whole strategy.
 
@@ -269,11 +269,20 @@ def canary_gate(prices: pd.DataFrame, canary: list[str] | None = None,
     strategy in full; if one is negative, half of it moves to `safe`; if both
     are negative, everything goes to `safe` (None = cash). Unlike a trend filter on the held
     asset, this reads risk appetite in other markets, which tends to turn first.
+    signal: "13612W" (default), "12m" (plain 12-month return) or "avg"
+    (plain mean of 1/3/6/12-month returns).
     """
     canary = canary or ["EEM", "AGG"]
     w = REGISTRY[strategy](prices, **params)
-    bad = (momentum_13612(prices[canary]) <= 0).sum(axis=1) / len(canary)
-    bad = bad.where(momentum_13612(prices[canary]).notna().all(axis=1), 0.0)
+    px = prices[canary]
+    if signal == "12m":
+        mom = px.pct_change(252)
+    elif signal == "avg":
+        mom = sum(px.pct_change(21 * m) for m in (1, 3, 6, 12)) / 4
+    else:
+        mom = momentum_13612(px)
+    bad = (mom <= 0).sum(axis=1) / len(canary)
+    bad = bad.where(mom.notna().all(axis=1), 0.0)
     ends = _period_ends(prices.index, "M", params.get("offset", 0))
     risk_off = bad.where(bad.index.isin(ends)).ffill().fillna(0.0)
     cut = w.mul(risk_off, axis=0)

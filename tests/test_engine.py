@@ -149,6 +149,8 @@ def test_vol_target_lowers_leverage(blend_prices):
     ("tranched", {"lookbacks": [21, 63, 126, 252]}),
     ("core_satellite", {"core_share": 0.3}),
     ("canary_gate", {"canary": ["EFA", "TLT"]}),
+    ("canary_gate", {"canary": ["EFA"], "signal": "12m"}),
+    ("canary_gate", {"canary": ["EFA"], "signal": "avg"}),
 ])
 def test_research_wrappers_no_lookahead(blend_prices, name, opts):
     from quant.strategies import REGISTRY
