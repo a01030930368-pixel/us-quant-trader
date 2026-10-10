@@ -142,3 +142,52 @@ def test_quotes_endpoint_cleans_symbols(server, monkeypatch):
     assert code == 200 and json.loads(body)["quotes"] == {}
     assert seen == [["QQQ", "UPRO"]]
     assert call(url + "/api/quotes?symbols=QQQ", headers={"Host": "evil.example"})[0] == 403
+
+
+# -- missed evenings -----------------------------------------------------------
+
+
+def test_missed_days():
+    assert agent.missed_days(k(2026, 10, 13, 10, 0), "2026-10-12") == []
+    assert agent.missed_days(k(2026, 10, 13, 3, 0), "2026-10-09") == []        # Mon still in window
+    assert agent.missed_days(k(2026, 10, 13, 10, 0), "2026-10-09") == ["2026-10-12"]
+    assert agent.missed_days(k(2026, 10, 15, 10, 0), "2026-10-12") == ["2026-10-13", "2026-10-14"]
+    assert agent.missed_days(k(2026, 10, 12, 10, 0), "2026-10-09") == []       # weekend
+    assert agent.missed_days(k(2026, 10, 13, 10, 0), None) == []
+
+
+def test_stay_awake_window():
+    assert not agent.should_stay_awake(k(2026, 10, 12, 23, 0), "2026-10-09")
+    assert agent.should_stay_awake(k(2026, 10, 12, 23, 30), "2026-10-09")
+    assert agent.should_stay_awake(k(2026, 10, 13, 1, 0), "2026-10-09")        # catching up
+    assert not agent.should_stay_awake(k(2026, 10, 12, 23, 50), "2026-10-12")  # done
+
+
+def test_check_missed_alerts_once(tmp_path, monkeypatch):
+    from quant import notify
+    monkeypatch.setattr(agent, "STATE", tmp_path / "agent.json")
+    monkeypatch.setattr(agent, "LOG", tmp_path / "agent.log")
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda text: sent.append(text) or True)
+    agent.write_state({"last_day": "2026-10-09"})
+    now = k(2026, 10, 13, 10, 0)
+    assert agent.check_missed(now, agent.read_state()) == ["2026-10-12"]
+    assert agent.check_missed(now, agent.read_state()) == ["2026-10-12"]
+    assert len(sent) == 1 and "10/12(월)" in sent[0] and "10/13 23:45" in sent[0]
+    assert agent.read_state()["missed"] == ["2026-10-12"]
+    agent.check_missed(k(2026, 10, 14, 10, 0), agent.read_state())
+    assert len(sent) == 2 and "10/13(화)" in sent[1] and "10/12" not in sent[1]
+    agent.update_state(last_day="2026-10-14")
+    assert agent.check_missed(k(2026, 10, 15, 10, 0), agent.read_state()) == []
+    assert agent.read_state()["missed"] == []
+
+
+def test_wake_task_xml_is_valid():
+    import xml.etree.ElementTree as ET
+    from pathlib import Path
+    xml = agent.wake_task_xml(Path(r"C:\Py & Co\pythonw.exe"), Path("/home/me/mintory/scripts/mintory_agent.py"))
+    root = ET.fromstring(xml.replace('encoding="UTF-16"', ""))
+    ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    assert root.find("t:Settings/t:WakeToRun", ns).text == "true"
+    assert root.find("t:Actions/t:Exec/t:Command", ns).text == r"C:\Py & Co\pythonw.exe"
+    assert "T23:40:00+09:00" in root.find("t:Triggers/t:CalendarTrigger/t:StartBoundary", ns).text
