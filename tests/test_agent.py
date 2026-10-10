@@ -191,3 +191,69 @@ def test_wake_task_xml_is_valid():
     assert root.find("t:Settings/t:WakeToRun", ns).text == "true"
     assert root.find("t:Actions/t:Exec/t:Command", ns).text == r"C:\Py & Co\pythonw.exe"
     assert "T23:40:00+09:00" in root.find("t:Triggers/t:CalendarTrigger/t:StartBoundary", ns).text
+
+
+def test_weekly_due():
+    assert agent.weekly_due(k(2026, 10, 17, 6, 59), None) is None            # Sat before 7
+    assert agent.weekly_due(k(2026, 10, 17, 7, 0), None) == "2026-10-16"
+    assert agent.weekly_due(k(2026, 10, 18, 22, 0), None) == "2026-10-16"    # Sunday catch-up
+    assert agent.weekly_due(k(2026, 10, 18, 22, 0), "2026-10-16") is None    # already sent
+    assert agent.weekly_due(k(2026, 10, 19, 9, 0), None) is None             # Monday
+
+
+def test_send_weekly_refreshes_then_sends_once(tmp_path, monkeypatch):
+    from quant import notify
+    monkeypatch.setattr(agent, "STATE", tmp_path / "agent.json")
+    monkeypatch.setattr(agent, "LOG", tmp_path / "agent.log")
+    monkeypatch.setattr(agent, "PAPER", tmp_path)
+    order = []
+    monkeypatch.setattr(agent, "run_trader", lambda args: order.append(args) or 0)
+    monkeypatch.setattr(notify, "configured", lambda *a: True)
+    monkeypatch.setattr(notify, "settings", lambda *a: {"weekly": True, "daily": True})
+    monkeypatch.setattr(notify, "notify_weekly", lambda week, paper: order.append(week) or True)
+    monkeypatch.setattr(notify, "notify_run", lambda *a, **kw: False)
+    agent.send_weekly("2026-10-16")
+    assert order == [agent.JOBS["refresh"], "2026-10-16"]
+    assert agent.read_state()["weekly_sent"] == "2026-10-16"
+
+
+def test_backup_due():
+    assert agent.backup_due(k(2026, 10, 13, 6, 59), None) is None
+    assert agent.backup_due(k(2026, 10, 13, 7, 0), "2026-10-12") == "2026-10-13"
+    assert agent.backup_due(k(2026, 10, 17, 9, 0), None) == "2026-10-17"     # weekends too
+    assert agent.backup_due(k(2026, 10, 13, 23, 0), "2026-10-13") is None
+
+
+def test_make_backup_records_state(tmp_path, monkeypatch):
+    from quant import notify
+    monkeypatch.setattr(agent, "STATE", tmp_path / "paper" / "agent.json")
+    monkeypatch.setattr(agent, "LOG", tmp_path / "agent.log")
+    monkeypatch.setattr(agent, "PAPER", tmp_path / "paper")
+    monkeypatch.setattr(agent, "BACKUPS", tmp_path / "backups")
+    monkeypatch.setattr(notify, "read_env", lambda *a: {})
+    agent.write_state({"last_day": "2026-10-12"})
+    agent.make_backup("2026-10-13")
+    assert (tmp_path / "backups" / "paper-2026-10-13.zip").exists()
+    assert agent.read_state()["backup_day"] == "2026-10-13"
+
+
+def test_preview_due():
+    pv = {"order_date": "2026-10-15"}
+    assert agent.preview_due("2026-10-14", pv, None) == "2026-10-15"
+    assert agent.preview_due("2026-10-14", pv, "2026-10-15") is None          # sent already
+    assert agent.preview_due("2026-10-13", pv, None) is None                  # two days ahead
+    assert agent.preview_due("2026-10-16", {"order_date": "2026-10-19"}, None) == "2026-10-19"  # Fri -> Mon
+    assert agent.preview_due("2026-10-14", None, None) is None
+
+
+def test_send_preview_once(tmp_path, monkeypatch):
+    from quant import notify
+    monkeypatch.setattr(agent, "STATE", tmp_path / "agent.json")
+    monkeypatch.setattr(agent, "LOG", tmp_path / "agent.log")
+    monkeypatch.setattr(agent, "PAPER", tmp_path)
+    (tmp_path / "state.json").write_text(json.dumps({"preview": {"order_date": "2026-10-15"}}))
+    sent = []
+    monkeypatch.setattr(notify, "notify_preview", lambda paper: sent.append(paper) or True)
+    agent.send_preview("2026-10-14")
+    agent.send_preview("2026-10-14")
+    assert sent == [tmp_path] and agent.read_state()["preview_sent"] == "2026-10-15"

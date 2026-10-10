@@ -7,6 +7,8 @@
     /balance  잔고        보유 종목과 평가금액 (시세가 있으면 최신 시세로)
     /refresh  새로고침    키움 잔고를 새로 불러온 뒤 잔고 보내기 (주문 없음)
     /status   상태        다음 자동 실행, 마지막 실행 결과, 일시정지 여부
+    /next     다음        다음 리밸런싱 날짜와 예상 주문
+    /check    점검        실계좌 전환 점검표
     /pause    일시정지    자동 매매가 주문을 내지 않게 멈춤
     /resume   재개        다시 주문
     /help     도움말 (/? 나 ? 도 됨)
@@ -26,11 +28,13 @@ COMMANDS = [
     ("balance", "잔고", "보유 종목과 평가금액"),
     ("refresh", "새로고침", "키움 잔고를 새로 불러오기 (주문 없음)"),
     ("status", "상태", "다음 자동 실행과 마지막 결과"),
+    ("next", "다음", "다음 리밸런싱 예상 주문"),
+    ("check", "점검", "실계좌 전환 점검표"),
     ("pause", "일시정지", "자동 매매 주문 멈추기"),
     ("resume", "재개", "자동 매매 주문 다시 하기"),
     ("help", "도움말", "명령 목록"),
 ]
-ICONS = {"balance": "💰", "refresh": "🔄", "status": "📋", "pause": "⏸", "resume": "▶️", "help": "❓"}
+ICONS = {"balance": "💰", "refresh": "🔄", "status": "📋", "next": "📣", "check": "🧾", "pause": "⏸", "resume": "▶️", "help": "❓"}
 ALIASES = {ko: en for en, ko, _ in COMMANDS} | {
     "start": "help", "?": "help", "？": "help", "명령": "help", "명령어": "help", "도움": "help", "정지": "pause", "멈춰": "pause", "다시시작": "resume",
 }
@@ -47,6 +51,7 @@ class Actions:
     set_paused: Callable[[bool], None]
     refresh: Callable[[], str | None]  # run a balance check; None when another run is going
     quotes: Callable[[list[str]], dict] | None = None
+    readiness: Callable[[], dict] | None = None
 
 
 def command(text: str) -> str | None:
@@ -119,10 +124,43 @@ def status_text(state: dict, agent: dict, paused: bool) -> str:
     nxt = (state.get("next_rebalance") or {}).get("order_date")
     if nxt:
         lines.append(f"📅 다음 리밸런싱 주문일 · {nxt}")
+    if agent.get("backup_day"):
+        lines.append(f"🗂 마지막 기록 백업 · {agent['backup_day']}")
     blocks = ["📋 Mintory 상태", "\n".join(lines)]
     if agent.get("missed"):
         blocks.append("⚠️ 놓친 실행 · " + ", ".join(agent["missed"]))
     return "\n\n".join(blocks)
+
+
+def next_text(state: dict, paused: bool = False) -> str:
+    pv = state.get("preview") or {}
+    if not pv.get("order_date"):
+        return "📣 아직 미리보기가 없어요.\n\nMintory에서 잔고 새로고침을 한 번 하면 계산돼요."
+    blocks = [f"📣 다음 리밸런싱\n🗓 {_when(pv['order_date'] + 'T23:45')} 자동 실행"]
+    orders = pv.get("orders") or []
+    if orders:
+        blocks.append("🛒 예상 주문\n" + "\n".join(
+            f"{notify.SIDE_ICON.get(o['side'], '·')} {notify.SIDE.get(o['side'], o['side'])} {o['symbol']} "
+            f"{o['qty']}주 (약 {_usd(float(o['value']))})" for o in orders))
+    else:
+        blocks.append("✅ 지금 가격이면 바뀌는 종목이 없어요")
+    blocks.append(f"💡 {notify._md(pv.get('as_of') or pv['order_date'])} 장 마감 가격 기준 예상이에요. 신호일 마감 가격으로 다시 계산해요.")
+    if paused:
+        blocks.append("⏸ 일시정지 중이라 이대로면 주문하지 않아요")
+    return "\n\n".join(blocks)
+
+
+STATUS_ICON = {"ok": "✅", "warn": "⚠️", "fail": "❌", "todo": "⬜"}
+
+
+def readiness_text(report: dict) -> str:
+    sm = report.get("summary") or {}
+    head = ("🧾 실계좌 전환 점검표\n"
+            + ("✅ 모두 준비됐어요" if sm.get("ready") else
+               f"✅ {sm.get('ok', 0)} · ⚠️ {sm.get('warn', 0)} · ❌ {sm.get('fail', 0)} · ⬜ {sm.get('todo', 0)}"))
+    rows = "\n".join(f"{STATUS_ICON.get(i['status'], '·')} {i['title']}\n    {i['detail']}"
+                     for i in report.get("items") or [])
+    return head + "\n\n" + rows + "\n\n💡 점검만 해요. 실계좌 전환은 직접 확인한 뒤에 따로 진행해요."
 
 
 def help_text() -> str:
@@ -144,6 +182,12 @@ def handle(text: str, act: Actions) -> str:
             return "⏳ 지금 다른 작업(매매 실행이나 새로고침) 중이에요.\n\n잠시 뒤에 다시 보내 주세요."
         head = "" if result == "ok" else f"⚠️ 잔고를 불러오지 못했어요 ({result}).\n마지막 기록을 보여 드려요.\n\n"
         return head + balance_text(act.state(), None, act.paused())
+    if cmd == "next":
+        return next_text(act.state(), act.paused())
+    if cmd == "check":
+        if not act.readiness:
+            return "🧾 점검표를 불러오지 못했어요."
+        return readiness_text(act.readiness())
     if cmd == "status":
         return status_text(act.state(), act.agent(), act.paused())
     if cmd == "pause":

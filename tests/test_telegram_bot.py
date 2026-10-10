@@ -91,3 +91,18 @@ def test_serve_only_answers_owner_and_hides_token(monkeypatch):
     monkeypatch.setattr(tb, "_api", boom)
     tb.serve(act, lambda: None, lambda n: None, log=logs.append, once=True)
     assert logs and "SECRET" not in logs[-1] and "***" in logs[-1]
+
+
+def test_next_command_shows_preview():
+    from quant.telegram_bot import Actions, handle
+    pv = {"order_date": "2026-10-15", "as_of": "2026-10-13",
+          "orders": [{"symbol": "IEF", "side": "buy", "qty": 3, "value": 290.0}]}
+    act = Actions(state=lambda: {"preview": pv}, agent=dict, paused=lambda: False,
+                  set_paused=lambda v: None, refresh=lambda: "ok")
+    text = handle("/다음", act)
+    assert "10/15(목) 23:45" in text and "🔴 매수 IEF 3주 (약 $290.00)" in text and "10/13(화) 장 마감" in text
+    assert "바뀌는 종목이 없어요" in handle("/next", Actions(state=lambda: {"preview": {**pv, "orders": []}}, agent=dict,
+                                                          paused=lambda: False, set_paused=lambda v: None,
+                                                          refresh=lambda: "ok"))
+    assert "미리보기가 없어요" in handle("next", Actions(state=dict, agent=dict, paused=lambda: False,
+                                                    set_paused=lambda v: None, refresh=lambda: "ok"))

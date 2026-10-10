@@ -73,6 +73,7 @@
 | `signal.canary` | | 카나리아 전략에서만. `[{symbol, score, risk_on}]`: 신호 종목의 가중 모멘텀과 위험 신호 여부(`risk_on`이 false면 그날 리밸런싱하는 덩어리는 IEF) |
 | `alerts` | | `level`: `info` · `warn` · `error` |
 | `backtest` | | 같은 전략의 백테스트 비교. `{from, cost_bps, series: {날짜: 평가금액}}`. `from`(첫 기록일)의 실제 평가금액에서 시작해, 전날 장 마감 목표 비중으로 다음 날 수익을 받고 회전율×`cost_bps`를 뺀 값. 날짜는 `equity.jsonl`과 같음 |
+| `preview` | | 다음 리밸런싱 미리보기. `{signal_date, order_date, as_of, weights: {종목: 비중}, orders: [{symbol, side, qty, ref_price, value}]}`. `as_of`(마지막 장 마감) 가격이 신호일까지 그대로라고 가정한 예상치. 오늘이 주문일이면 그다음 리밸런싱 |
 
 ## trades.jsonl (한 줄 = 주문 하나)
 

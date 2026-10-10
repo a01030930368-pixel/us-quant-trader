@@ -233,6 +233,14 @@ tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
 .step { background: var(--panel-2); border-radius: 10px; padding: 10px 12px; display: grid; gap: 2px; }
 .step .k { font-size: 12px; color: var(--sub); }
 .step b { font-size: 13.5px; font-weight: 600; }
+.pv { margin-top: 10px; background: var(--panel-2); border-radius: 10px; padding: 10px 12px; }
+.pv-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--sub); margin-bottom: 6px; }
+.pv-row { display: flex; justify-content: space-between; gap: 8px; font-size: 13.5px; padding: 3px 0; }
+.pv-row .side { font-weight: 600; margin-right: 6px; }
+.pv-row .buy { color: var(--up); }
+.pv-row .sell { color: var(--down); }
+.pv-row small { color: var(--sub); }
+.pv-none { font-size: 13px; color: var(--sub); }
 .signal { padding-top: 14px; display: grid; gap: 14px; }
 .signal-head { font-size: 12.5px; color: var(--sub); }
 .sleeve { display: grid; gap: 5px; }
@@ -308,6 +316,19 @@ tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
 .m-stats b { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .m-stats small { color: var(--dim); font-size: 11.5px; }
 .detail td.l, .detail th.l { text-align: left; }
+.ready-sum { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 6px 12px; }
+.ready-sum span { background: var(--panel); border-radius: 999px; padding: 6px 12px; font-size: 12.5px; color: var(--sub); }
+.ready-sum span b { color: var(--fg); margin-left: 4px; }
+.ready-list { display: grid; gap: 6px; margin: 0 6px; }
+.ready-row { display: grid; grid-template-columns: 26px 220px 1fr; gap: 10px; align-items: center; background: var(--panel); border-radius: 10px; padding: 11px 14px; font-size: 13px; }
+.ready-row .ic { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 800; }
+.ready-row.ok .ic { background: rgba(69, 208, 184, 0.16); color: #45d0b8; }
+.ready-row.warn .ic { background: rgba(255, 181, 71, 0.16); color: var(--warn); }
+.ready-row.fail .ic { background: var(--up-bg); color: var(--up); }
+.ready-row.todo .ic { background: var(--line); color: var(--sub); }
+.ready-row b { font-weight: 650; }
+.ready-row span { color: var(--sub); }
+@media (max-width: 760px) { .ready-row { grid-template-columns: 26px 1fr; } .ready-row span { grid-column: 2; } }
 .detail tr.bad td { opacity: 0.55; }
 .m-chart { margin: 0 6px 14px; background: var(--panel); border-radius: 12px; padding: 12px 14px 6px; }
 .m-chart svg { width: 100%; height: auto; display: block; overflow: visible; }
@@ -396,6 +417,10 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       <button type="button" class="ctl primary" id="btn-run" title="밤 11:45 자동 실행과 같은 작업을 지금 한 번 해요.">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 2.8v10.4a.6.6 0 0 0 .92.5l8.1-5.2a.6.6 0 0 0 0-1L5.42 2.3a.6.6 0 0 0-.92.5z"/></svg>
         <span>지금 매매 실행</span>
+      </button>
+      <button type="button" class="ctl" id="btn-check" title="실계좌로 바꾸기 전에 확인할 것들을 점검해요. 점검만 하고 아무것도 바꾸지 않아요.">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 2.8 3.8v4c0 3.1 2.2 5.4 5.2 6.4 3-1 5.2-3.3 5.2-6.4v-4z"/><path d="m5.6 8 1.7 1.7 3.2-3.4"/></svg>
+        <span>실계좌 점검</span>
       </button>
       <button type="button" class="ctl" id="btn-pause" title="누르면 그 뒤로 주문을 내지 않아요. 자동 실행도 멈춰요.">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4" y="3" width="2.6" height="10" rx=".8"/><rect x="9.4" y="3" width="2.6" height="10" rx=".8"/></svg>
@@ -824,6 +849,17 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   renderHoldings();
 
   // ---- rebalance ----
+  // 다음 리밸런싱 미리보기: 지금 가격이 신호일까지 그대로라면 나갈 주문 (runner.preview_rebalance)
+  function previewHtml(pv) {
+    if (!pv || !pv.order_date || parseDate(pv.order_date) < today()) return "";
+    var head = '<div class="pv-head"><span>' + md(pv.order_date) + " 예상 주문</span><span>" + md(pv.as_of) + " 종가 기준</span></div>";
+    var orders = pv.orders || [];
+    if (!orders.length) return '<div class="pv">' + head + '<div class="pv-none">지금 가격이면 바뀌는 종목이 없어요.</div></div>';
+    return '<div class="pv">' + head + orders.map(function (o) {
+      return '<div class="pv-row"><span><span class="side ' + (o.side === "buy" ? "buy" : "sell") + '">' + (o.side === "buy" ? "매수" : "매도") + "</span>" +
+        esc(o.symbol) + " " + Number(o.qty).toLocaleString("en-US") + "주</span><small>약 " + usd(o.value) + "</small></div>";
+    }).join("") + '<div class="pv-none" style="margin-top:4px">신호일 장 마감 가격으로 다시 계산하니 수량은 달라질 수 있어요.</div></div>';
+  }
   var reb = [];
   if (nextDate) {
     var start = S.last_rebalance ? parseDate(S.last_rebalance) : null, end = parseDate(nextDate);
@@ -834,7 +870,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       '<div class="steps">' +
       (nextR.signal_date ? '<div class="step"><span class="k">신호 계산</span><b>' + md(nextR.signal_date) + " (" + wk(nextR.signal_date) + ") 장 마감 후</b></div>" : "") +
       (nextR.order_date ? '<div class="step"><span class="k">주문 실행</span><b>' + md(nextR.order_date) + " (" + wk(nextR.order_date) + ") 개장 직후</b></div>" : "") +
-      "</div></div>");
+      "</div>" + previewHtml(S.preview) + "</div>");
   } else {
     reb.push('<div class="next sub">다음 일정이 아직 기록되지 않았어요.</div>');
   }
@@ -1398,6 +1434,47 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       });
       back.querySelector('[data-act="no"]').focus();
     };
+
+    // ---- 실계좌 점검표 (읽기만 함) ----
+    var btnCheck = $("btn-check");
+    var readyIcon = { ok: "✓", warn: "!", fail: "✕", todo: "·" };
+    var openReadiness = function () {
+      var back = document.createElement("div");
+      back.className = "modal-back";
+      back.innerHTML = '<div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="r-title" style="width:min(900px,100%)">' +
+        '<div class="m-head"><h3 id="r-title">실계좌 전환 점검표</h3><span class="sub">불러오는 중…</span>' +
+        '<button type="button" class="ctl mini" data-act="keys" title="실계좌 앱키로 토큰을 받고 달러 예수금만 조회해요. 주문은 내지 않아요.">실계좌 키 확인 (조회만)</button>' +
+        '<button type="button" class="ctl x" data-act="close">닫기</button></div>' +
+        '<div class="m-body"></div>' +
+        '<div class="m-foot">점검만 해요. 실행기는 계속 모의투자로 돌고, 실계좌 전환은 모든 항목을 확인한 뒤 따로 진행해요.</div></div>';
+      document.body.appendChild(back);
+      var sub = back.querySelector(".sub"), body = back.querySelector(".m-body"), keyBtn = back.querySelector('[data-act="keys"]');
+      var draw = function (r) {
+        var sm = r.summary || {};
+        sub.textContent = sm.ready ? "모두 준비됐어요" : (sm.total || 0) + "개 중 " + (sm.ok || 0) + "개 준비됨";
+        body.innerHTML = '<div class="ready-sum"><span>준비됨<b>' + (sm.ok || 0) + '</b></span><span>확인 권장<b>' + (sm.warn || 0) +
+          '</b></span><span>꼭 고칠 것<b>' + (sm.fail || 0) + '</b></span><span>아직 확인 안 함<b>' + (sm.todo || 0) + "</b></span></div>" +
+          '<div class="ready-list">' + (r.items || []).map(function (i) {
+            return '<div class="ready-row ' + esc(i.status) + '"><i class="ic">' + (readyIcon[i.status] || "·") + "</i><b>" + esc(i.title) + "</b><span>" + esc(i.detail) + "</span></div>";
+          }).join("") + "</div>";
+      };
+      var load = function (path, post) {
+        return api(path, post).then(draw).catch(function () { sub.textContent = "자동 실행기에 연결하지 못했어요"; });
+      };
+      load("/api/readiness");
+      var close = function () { back.remove(); document.removeEventListener("keydown", onKey); btnCheck.focus(); };
+      var onKey = function (e) { if (e.key === "Escape") close(); };
+      document.addEventListener("keydown", onKey);
+      back.addEventListener("click", function (e) {
+        var act = e.target.closest && e.target.closest("[data-act]");
+        if (e.target === back || (act && act.getAttribute("data-act") === "close")) return close();
+        if (act && act.getAttribute("data-act") === "keys") {
+          keyBtn.disabled = true; keyBtn.textContent = "확인 중…";
+          load("/api/live-key-check", {}).then(function () { keyBtn.disabled = false; keyBtn.textContent = "실계좌 키 확인 (조회만)"; });
+        }
+      });
+    };
+    btnCheck.addEventListener("click", openReadiness);
 
     btnRefresh.addEventListener("click", function () { start("/api/refresh"); });
     btnRun.addEventListener("click", confirmRun);

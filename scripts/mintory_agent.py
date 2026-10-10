@@ -16,6 +16,8 @@ Mintory 화면의 버튼(잔고 새로고침, 지금 매매 실행, 일시정지
 - 화면은 http://127.0.0.1:47321 에서 보여준다. 이 주소는 이 PC 안에서만 열린다.
   같은 포트가 "이미 켜져 있음" 표시도 겸해서, 한 번에 하나만 돈다.
 - 일시정지는 paper/STOP 파일을 만들고 지우는 것과 같다(실행기가 STOP이 있으면 주문을 안 냄).
+- 토요일 아침 7시(금요일 미국장 마감 뒤)에 잔고를 새로 불러와 주간 리포트를 텔레그램으로 보낸다.
+  그때 PC가 꺼져 있었으면 주말 중 켜질 때 보낸다. .env 에 NOTIFY_WEEKLY=0 이면 끈다.
 - 텔레그램이 연결돼 있으면 휴대폰 명령(/balance, /refresh, /status, /pause, /resume)에 답한다
   (quant/telegram_bot.py). 주문을 내는 명령은 없다.
 - 상태는 paper/agent.json, 로그는 paper/logs/agent.log.
@@ -32,7 +34,7 @@ import sys
 import threading
 import time
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -145,6 +147,61 @@ def missed_message(days: list[str], next_iso: str | None) -> str:
             "그 시각에 PC가 꺼져 있었거나 잠자기 상태였어요.\n\n"
             f"🔁 밀린 주문은 다음 자동 실행{nxt} 때 알아서 맞춰집니다.\n"
             "💡 그 시각에 PC를 켜 두세요.")
+
+
+WEEKLY_AT = 7  # KST hour on Saturday; Friday's US session has closed by then
+
+
+def weekly_due(now: datetime, last_week: str | None) -> str | None:
+    """The Friday whose weekly report is due (Saturday 07:00 KST through Sunday), else None."""
+    now = now.astimezone(KST)
+    wd = now.weekday()
+    if not ((wd == 5 and now.hour >= WEEKLY_AT) or wd == 6):
+        return None
+    friday = (now - timedelta(days=wd - 4)).date().isoformat()
+    return friday if friday != last_week else None
+
+
+BACKUP_AT = 7  # KST hour; the night's run and fills are final by then
+BACKUPS = ROOT / "backups"
+
+
+def backup_due(now: datetime, last: str | None) -> str | None:
+    """Today's date once it is past 07:00 KST and today's backup is not made yet."""
+    now = now.astimezone(KST)
+    day = now.date().isoformat()
+    return day if now.hour >= BACKUP_AT and day != last else None
+
+
+def make_backup(day: str) -> None:
+    from quant import backup, notify
+    try:
+        saved = backup.daily(PAPER, BACKUPS, day, notify.read_env().get("BACKUP_DIR"))
+    except OSError as e:
+        log(f"기록 백업 실패: {e}")
+        return
+    if saved:
+        log("기록 백업: " + ", ".join(str(p) for p in saved))
+    update_state(backup_day=day, backup_files=[str(p) for p in saved])
+
+
+def preview_due(day: str, preview: dict | None, sent: str | None) -> str | None:
+    """The order date to warn about when the rebalance is the next weekday after `day`."""
+    order = (preview or {}).get("order_date")
+    nxt = date.fromisoformat(day) + timedelta(days=1)
+    while nxt.weekday() >= 5:
+        nxt += timedelta(days=1)
+    return order if order == nxt.isoformat() and order != sent else None
+
+
+def send_preview(day: str) -> None:
+    """After the nightly run: tell the phone what tomorrow's rebalance will trade."""
+    from quant import notify
+    order = preview_due(day, _read_json(PAPER / "state.json").get("preview"), read_state().get("preview_sent"))
+    if order:
+        if notify.notify_preview(PAPER):
+            log(f"리밸런싱 미리 알림 보냄 ({order} 주문)")
+        update_state(preview_sent=order)
 
 
 def now_iso() -> str:
@@ -305,6 +362,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
         if path == "/api/status":
             return self._json(200, control_state())
+        if path == "/api/readiness":
+            return self._json(200, readiness_report())
         if path == "/api/quotes":
             from quant import live
             symbols = live.clean_symbols(parse_qs(urlsplit(self.path).query).get("symbols", [""])[0])
@@ -331,7 +390,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/pause":
             set_paused(bool(body.get("paused", True)))
             return self._json(200, control_state())
+        if path == "/api/live-key-check":  # read-only balance query, never an order
+            from quant import notify, readiness
+            readiness.check_live_keys(notify.read_env(), PAPER)
+            return self._json(200, readiness_report())
         self._json(404, {"error": "not found"})
+
+
+def readiness_report() -> dict:
+    from quant import notify, readiness
+    items = readiness.checklist(PAPER, notify.read_env(), read_state(),
+                                wake=readiness.wake_task_registered(WAKE_TASK))
+    return {"items": items, "summary": readiness.summary(items)}
 
 
 def start_server(wait: float = 0) -> Server | None:
@@ -387,12 +457,32 @@ def loop(restarted: bool = False) -> None:
                 result = _run_job("auto")
             update_state(last_day=session_day(now), last_run=now.isoformat(timespec="seconds"),
                          last_result=result)
+            send_preview(session_day(now))
+            state = read_state()
+        week = weekly_due(now, state.get("weekly_sent"))
+        if week:
+            send_weekly(week)
+            state = read_state()
+        day = backup_due(now, state.get("backup_day"))
+        if day and not _job["name"]:
+            make_backup(day)
             state = read_state()
         update_state(agent="running" if not _job["name"] else read_state().get("agent"),
                      checked_at=now_iso(),
                      next_run=next_run(datetime.now(KST), state.get("last_day"))
                      .isoformat(timespec="minutes"))
         time.sleep(60)
+
+
+def send_weekly(week: str) -> None:
+    """Refresh the balance at Friday's close, then send the weekly report (once per week)."""
+    from quant import notify
+    if notify.configured() and notify.settings()["weekly"]:
+        with _job_lock:
+            _run_job("refresh")
+        if notify.notify_weekly(week, PAPER):
+            log(f"주간 리포트 보냄 ({week} 주)")
+    update_state(weekly_sent=week)
 
 
 def check_missed(now: datetime, state: dict) -> list[str]:
@@ -427,7 +517,7 @@ def refresh_now() -> str | None:
 def start_bot() -> None:
     from quant import live, telegram_bot
     act = telegram_bot.Actions(
-        state=lambda: _read_json(PAPER / "state.json"), agent=read_state,
+        state=lambda: _read_json(PAPER / "state.json"), agent=read_state, readiness=readiness_report,
         paused=lambda: STOP.exists(), set_paused=set_paused, refresh=refresh_now,
         quotes=lambda syms: live.quotes(live.clean_symbols(",".join(syms))))
     threading.Thread(target=telegram_bot.serve, daemon=True, kwargs={

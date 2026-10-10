@@ -77,3 +77,42 @@ def test_set_env_keeps_other_keys(tmp_path):
     set_env({"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "2"}, env)
     assert env.read_text(encoding="utf-8").splitlines() == [
         "KIWOOM_APP_KEY=k", "TELEGRAM_CHAT_ID=2", "TELEGRAM_BOT_TOKEN=t"]
+
+
+def test_weekly_message():
+    eq = [{"date": "2026-10-09", "equity": 100000.0, "benchmark_close": 600.0},
+          {"date": "2026-10-12", "equity": 100300.0, "benchmark_close": 603.0},
+          {"date": "2026-10-16", "equity": 101000.0, "benchmark_close": 606.0}]
+    st = {"initial_capital": 100000, "benchmark": "SPY", "next_rebalance": {"order_date": "2026-10-22"},
+          "backtest": {"series": {"2026-10-09": 100000.0, "2026-10-16": 101500.0}}}
+    trades = [{"date": "2026-10-15", "side": "buy", "symbol": "QQQ", "qty": 3, "price": 750.0,
+               "status": "filled", "fee": 5.6},
+              {"date": "2026-10-08", "side": "buy", "symbol": "TQQQ", "qty": 1, "price": 80.0,
+               "status": "filled", "fee": 1.0}]
+    text = notify.weekly_message("2026-10-16", st, eq, trades)
+    assert "10/12(월) ~ 10/16(금)" in text
+    assert "📈 이번 주 +1.00% (+$1,000.00)" in text
+    assert "· SPY +1.00% · 차이 +0.00%p" in text
+    assert "· 백테스트 +1.50% · 차이 -0.50%p" in text
+    assert "매매 1건 · 수수료 $5.60" in text and "TQQQ" not in text
+    assert "리밸런싱 주문일 10/22(목)" in text
+    assert notify.weekly_message("2026-10-23", st, eq, trades) is None
+
+
+def test_weekly_message_first_week_uses_initial_capital():
+    eq = [{"date": "2026-10-12", "equity": 99000.0}]
+    text = notify.weekly_message("2026-10-16", {"initial_capital": 100000}, eq, [])
+    assert "📉 이번 주 -1.00% (-$1,000.00)" in text and "매매 없음" in text
+
+
+def test_preview_message():
+    from quant.notify import preview_message
+    pv = {"order_date": "2026-10-15", "as_of": "2026-10-13",
+          "orders": [{"symbol": "UPRO", "side": "sell", "qty": 10, "value": 1000.0},
+                     {"symbol": "IEF", "side": "buy", "qty": 20, "value": 1900.5}]}
+    text = preview_message(pv)
+    assert text.startswith("📣 내일 밤 리밸런싱 예정") and "10/15(목) 23:45" in text
+    assert "🔵 매도 UPRO 10주 (약 $1,000.00)" in text and "🔴 매수 IEF 20주 (약 $1,900.50)" in text
+    assert "10/13(화) 장 마감 가격 기준" in text and "일시정지" not in text
+    assert "⏸" in preview_message(pv, paused=True)
+    assert preview_message({**pv, "orders": []}) is None

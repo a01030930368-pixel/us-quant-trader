@@ -236,6 +236,28 @@ def next_rebalance(today: pd.Timestamp, cfg: TraderConfig | None = None) -> dict
             "order_date": str((month_end + pd.offsets.BDay(1)).date())}
 
 
+def preview_rebalance(close: pd.DataFrame, today: pd.Timestamp, cfg: TraderConfig,
+                      positions: dict[str, dict], cash: float, prices: dict[str, float]) -> dict:
+    """The next rebalance after today, if prices stayed where they are now:
+    the target weights and the orders it would place. Unfinished sessions are
+    dropped and the last close is carried forward to the signal day."""
+    nxt = next_rebalance(today, cfg)
+    if nxt["order_date"] <= str(today.date()):  # today's trade is the run itself; show the one after
+        nxt = next_rebalance(today + pd.offsets.BDay(1), cfg)
+    sig = pd.Timestamp(nxt["signal_date"])
+    px = close[close.index < today.normalize()]
+    if sig > px.index[-1]:
+        future = pd.bdate_range(px.index[-1] + pd.offsets.BDay(1), sig)
+        px = pd.concat([px, pd.DataFrame([px.iloc[-1].values] * len(future), index=future, columns=px.columns)])
+    w = model_weights(px.loc[:sig], cfg).loc[sig] / (1 - cfg.cash_buffer)
+    weights = {t: round(float(v), 4) for t, v in w.items() if v > 1e-9}
+    orders = plan_orders(weights, {**{t: float(px[t].iloc[-1]) for t in px.columns}, **prices},
+                         positions, cash, cfg)
+    return {**nxt, "as_of": str(close.index[close.index < today.normalize()][-1].date()),
+            "weights": weights,
+            "orders": [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in o.items()} for o in orders]}
+
+
 def plan_orders(weights: dict[str, float], prices: dict[str, float],
                 positions: dict[str, dict], cash: float, cfg: TraderConfig) -> list[dict]:
     equity = cash + sum(p["qty"] * prices[t] for t, p in positions.items())
@@ -516,6 +538,11 @@ class Runner:
                           "cash": round(cash, 2),
                           "benchmark_close": round(prices.get(BENCHMARK, float("nan")), 4)})
         self._write_atomic("meta.json", meta)
+        preview = None
+        try:
+            preview = preview_rebalance(close, today, self.cfg, positions, cash, prices)
+        except Exception as e:  # noqa: BLE001 - a preview must never stop a run
+            alerts.append({"level": "info", "message": f"다음 리밸런싱 미리보기를 계산하지 못했습니다: {str(e)[:120]}"})
         backtest = None
         try:
             cost = self.cfg.model_cost_bps
@@ -526,7 +553,7 @@ class Runner:
             alerts.append({"level": "info", "message": f"백테스트 비교를 계산하지 못했습니다: {str(e)[:120]}"})
         return self._state(now, meta, alerts=alerts, positions=positions, cash=cash,
                            prices=prices, targets=targets, scores=scores, sig=sig, canary=canary,
-                           backtest=backtest)
+                           backtest=backtest, preview=preview)
 
     def _extra_rules(self) -> list[str]:
         rules = []
@@ -546,7 +573,7 @@ class Runner:
         return [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
 
     def _state(self, now, meta, alerts, positions=None, cash=None, prices=None,
-               targets=None, scores=None, sig=None, canary=None, backtest=None) -> dict:
+               targets=None, scores=None, sig=None, canary=None, backtest=None, preview=None) -> dict:
         prices = prices or {}
         if positions is None:
             try:
@@ -594,5 +621,9 @@ class Runner:
             backtest = self._read("state.json").get("backtest")
         if backtest:
             state["backtest"] = backtest
+        if preview is None:
+            preview = self._read("state.json").get("preview")
+        if preview:
+            state["preview"] = preview
         self._write_atomic("state.json", state)
         return state
