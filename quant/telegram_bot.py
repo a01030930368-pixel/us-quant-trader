@@ -26,11 +26,12 @@ COMMANDS = [
     ("balance", "잔고", "보유 종목과 평가금액"),
     ("refresh", "새로고침", "키움 잔고를 새로 불러오기 (주문 없음)"),
     ("status", "상태", "다음 자동 실행과 마지막 결과"),
+    ("check", "점검", "실계좌 전환 점검표"),
     ("pause", "일시정지", "자동 매매 주문 멈추기"),
     ("resume", "재개", "자동 매매 주문 다시 하기"),
     ("help", "도움말", "명령 목록"),
 ]
-ICONS = {"balance": "💰", "refresh": "🔄", "status": "📋", "pause": "⏸", "resume": "▶️", "help": "❓"}
+ICONS = {"balance": "💰", "refresh": "🔄", "status": "📋", "check": "🧾", "pause": "⏸", "resume": "▶️", "help": "❓"}
 ALIASES = {ko: en for en, ko, _ in COMMANDS} | {
     "start": "help", "?": "help", "？": "help", "명령": "help", "명령어": "help", "도움": "help", "정지": "pause", "멈춰": "pause", "다시시작": "resume",
 }
@@ -47,6 +48,7 @@ class Actions:
     set_paused: Callable[[bool], None]
     refresh: Callable[[], str | None]  # run a balance check; None when another run is going
     quotes: Callable[[list[str]], dict] | None = None
+    readiness: Callable[[], dict] | None = None
 
 
 def command(text: str) -> str | None:
@@ -125,6 +127,19 @@ def status_text(state: dict, agent: dict, paused: bool) -> str:
     return "\n\n".join(blocks)
 
 
+STATUS_ICON = {"ok": "✅", "warn": "⚠️", "fail": "❌", "todo": "⬜"}
+
+
+def readiness_text(report: dict) -> str:
+    sm = report.get("summary") or {}
+    head = ("🧾 실계좌 전환 점검표\n"
+            + ("✅ 모두 준비됐어요" if sm.get("ready") else
+               f"✅ {sm.get('ok', 0)} · ⚠️ {sm.get('warn', 0)} · ❌ {sm.get('fail', 0)} · ⬜ {sm.get('todo', 0)}"))
+    rows = "\n".join(f"{STATUS_ICON.get(i['status'], '·')} {i['title']}\n    {i['detail']}"
+                     for i in report.get("items") or [])
+    return head + "\n\n" + rows + "\n\n💡 점검만 해요. 실계좌 전환은 직접 확인한 뒤에 따로 진행해요."
+
+
 def help_text() -> str:
     rows = "\n".join(f"{ICONS[en]} /{en} ({ko})\n    {desc}" for en, ko, desc in COMMANDS)
     return ("🤖 Mintory 명령\n\n" + rows
@@ -144,6 +159,10 @@ def handle(text: str, act: Actions) -> str:
             return "⏳ 지금 다른 작업(매매 실행이나 새로고침) 중이에요.\n\n잠시 뒤에 다시 보내 주세요."
         head = "" if result == "ok" else f"⚠️ 잔고를 불러오지 못했어요 ({result}).\n마지막 기록을 보여 드려요.\n\n"
         return head + balance_text(act.state(), None, act.paused())
+    if cmd == "check":
+        if not act.readiness:
+            return "🧾 점검표를 불러오지 못했어요."
+        return readiness_text(act.readiness())
     if cmd == "status":
         return status_text(act.state(), act.agent(), act.paused())
     if cmd == "pause":

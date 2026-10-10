@@ -308,6 +308,19 @@ tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
 .m-stats b { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .m-stats small { color: var(--dim); font-size: 11.5px; }
 .detail td.l, .detail th.l { text-align: left; }
+.ready-sum { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 6px 12px; }
+.ready-sum span { background: var(--panel); border-radius: 999px; padding: 6px 12px; font-size: 12.5px; color: var(--sub); }
+.ready-sum span b { color: var(--fg); margin-left: 4px; }
+.ready-list { display: grid; gap: 6px; margin: 0 6px; }
+.ready-row { display: grid; grid-template-columns: 26px 220px 1fr; gap: 10px; align-items: center; background: var(--panel); border-radius: 10px; padding: 11px 14px; font-size: 13px; }
+.ready-row .ic { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 800; }
+.ready-row.ok .ic { background: rgba(69, 208, 184, 0.16); color: #45d0b8; }
+.ready-row.warn .ic { background: rgba(255, 181, 71, 0.16); color: var(--warn); }
+.ready-row.fail .ic { background: var(--up-bg); color: var(--up); }
+.ready-row.todo .ic { background: var(--line); color: var(--sub); }
+.ready-row b { font-weight: 650; }
+.ready-row span { color: var(--sub); }
+@media (max-width: 760px) { .ready-row { grid-template-columns: 26px 1fr; } .ready-row span { grid-column: 2; } }
 .detail tr.bad td { opacity: 0.55; }
 .m-chart { margin: 0 6px 14px; background: var(--panel); border-radius: 12px; padding: 12px 14px 6px; }
 .m-chart svg { width: 100%; height: auto; display: block; overflow: visible; }
@@ -396,6 +409,10 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       <button type="button" class="ctl primary" id="btn-run" title="밤 11:45 자동 실행과 같은 작업을 지금 한 번 해요.">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 2.8v10.4a.6.6 0 0 0 .92.5l8.1-5.2a.6.6 0 0 0 0-1L5.42 2.3a.6.6 0 0 0-.92.5z"/></svg>
         <span>지금 매매 실행</span>
+      </button>
+      <button type="button" class="ctl" id="btn-check" title="실계좌로 바꾸기 전에 확인할 것들을 점검해요. 점검만 하고 아무것도 바꾸지 않아요.">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 2.8 3.8v4c0 3.1 2.2 5.4 5.2 6.4 3-1 5.2-3.3 5.2-6.4v-4z"/><path d="m5.6 8 1.7 1.7 3.2-3.4"/></svg>
+        <span>실계좌 점검</span>
       </button>
       <button type="button" class="ctl" id="btn-pause" title="누르면 그 뒤로 주문을 내지 않아요. 자동 실행도 멈춰요.">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4" y="3" width="2.6" height="10" rx=".8"/><rect x="9.4" y="3" width="2.6" height="10" rx=".8"/></svg>
@@ -1398,6 +1415,47 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       });
       back.querySelector('[data-act="no"]').focus();
     };
+
+    // ---- 실계좌 점검표 (읽기만 함) ----
+    var btnCheck = $("btn-check");
+    var readyIcon = { ok: "✓", warn: "!", fail: "✕", todo: "·" };
+    var openReadiness = function () {
+      var back = document.createElement("div");
+      back.className = "modal-back";
+      back.innerHTML = '<div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="r-title" style="width:min(900px,100%)">' +
+        '<div class="m-head"><h3 id="r-title">실계좌 전환 점검표</h3><span class="sub">불러오는 중…</span>' +
+        '<button type="button" class="ctl mini" data-act="keys" title="실계좌 앱키로 토큰을 받고 달러 예수금만 조회해요. 주문은 내지 않아요.">실계좌 키 확인 (조회만)</button>' +
+        '<button type="button" class="ctl x" data-act="close">닫기</button></div>' +
+        '<div class="m-body"></div>' +
+        '<div class="m-foot">점검만 해요. 실행기는 계속 모의투자로 돌고, 실계좌 전환은 모든 항목을 확인한 뒤 따로 진행해요.</div></div>';
+      document.body.appendChild(back);
+      var sub = back.querySelector(".sub"), body = back.querySelector(".m-body"), keyBtn = back.querySelector('[data-act="keys"]');
+      var draw = function (r) {
+        var sm = r.summary || {};
+        sub.textContent = sm.ready ? "모두 준비됐어요" : (sm.total || 0) + "개 중 " + (sm.ok || 0) + "개 준비됨";
+        body.innerHTML = '<div class="ready-sum"><span>준비됨<b>' + (sm.ok || 0) + '</b></span><span>확인 권장<b>' + (sm.warn || 0) +
+          '</b></span><span>꼭 고칠 것<b>' + (sm.fail || 0) + '</b></span><span>아직 확인 안 함<b>' + (sm.todo || 0) + "</b></span></div>" +
+          '<div class="ready-list">' + (r.items || []).map(function (i) {
+            return '<div class="ready-row ' + esc(i.status) + '"><i class="ic">' + (readyIcon[i.status] || "·") + "</i><b>" + esc(i.title) + "</b><span>" + esc(i.detail) + "</span></div>";
+          }).join("") + "</div>";
+      };
+      var load = function (path, post) {
+        return api(path, post).then(draw).catch(function () { sub.textContent = "자동 실행기에 연결하지 못했어요"; });
+      };
+      load("/api/readiness");
+      var close = function () { back.remove(); document.removeEventListener("keydown", onKey); btnCheck.focus(); };
+      var onKey = function (e) { if (e.key === "Escape") close(); };
+      document.addEventListener("keydown", onKey);
+      back.addEventListener("click", function (e) {
+        var act = e.target.closest && e.target.closest("[data-act]");
+        if (e.target === back || (act && act.getAttribute("data-act") === "close")) return close();
+        if (act && act.getAttribute("data-act") === "keys") {
+          keyBtn.disabled = true; keyBtn.textContent = "확인 중…";
+          load("/api/live-key-check", {}).then(function () { keyBtn.disabled = false; keyBtn.textContent = "실계좌 키 확인 (조회만)"; });
+        }
+      });
+    };
+    btnCheck.addEventListener("click", openReadiness);
 
     btnRefresh.addEventListener("click", function () { start("/api/refresh"); });
     btnRun.addEventListener("click", confirmRun);

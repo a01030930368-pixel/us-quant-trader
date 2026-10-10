@@ -320,6 +320,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
         if path == "/api/status":
             return self._json(200, control_state())
+        if path == "/api/readiness":
+            return self._json(200, readiness_report())
         if path == "/api/quotes":
             from quant import live
             symbols = live.clean_symbols(parse_qs(urlsplit(self.path).query).get("symbols", [""])[0])
@@ -346,7 +348,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/pause":
             set_paused(bool(body.get("paused", True)))
             return self._json(200, control_state())
+        if path == "/api/live-key-check":  # read-only balance query, never an order
+            from quant import notify, readiness
+            readiness.check_live_keys(notify.read_env(), PAPER)
+            return self._json(200, readiness_report())
         self._json(404, {"error": "not found"})
+
+
+def readiness_report() -> dict:
+    from quant import notify, readiness
+    items = readiness.checklist(PAPER, notify.read_env(), read_state(),
+                                wake=readiness.wake_task_registered(WAKE_TASK))
+    return {"items": items, "summary": readiness.summary(items)}
 
 
 def start_server(wait: float = 0) -> Server | None:
@@ -457,7 +470,7 @@ def refresh_now() -> str | None:
 def start_bot() -> None:
     from quant import live, telegram_bot
     act = telegram_bot.Actions(
-        state=lambda: _read_json(PAPER / "state.json"), agent=read_state,
+        state=lambda: _read_json(PAPER / "state.json"), agent=read_state, readiness=readiness_report,
         paused=lambda: STOP.exists(), set_paused=set_paused, refresh=refresh_now,
         quotes=lambda syms: live.quotes(live.clean_symbols(",".join(syms))))
     threading.Thread(target=telegram_bot.serve, daemon=True, kwargs={
