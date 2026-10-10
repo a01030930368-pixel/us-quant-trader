@@ -44,9 +44,14 @@ python scripts/run_trader.py --mode kiwoom           # 실제 모의 주문
 - 예전 전략(월 1회 멀티기간 모멘텀)은 `--strategy multi`로 쓸 수 있습니다.
 - 전략이 바뀌면 첫 실행 때 이전 기록(`trades.jsonl`, `equity.jsonl`, `meta.json`)을 `paper/archive/<이전 전략>_<날짜>/`로 옮기고 그날부터 수익률을 새로 셉니다. 보유 종목은 그대로 두고 새 목표와 차이나는 만큼만 사고팝니다.
 - 11시 45분에 PC가 꺼져 있었더라도 새벽 5시 전에 켜면 바로 실행합니다. 그보다 늦으면 다음 날 실행에서 밀린 리밸런싱을 처리합니다.
+- **놓친 매매 대비**
+  - Mintory를 열면 윈도우 작업 스케줄러에 `Mintory 자동 실행` 작업이 등록됩니다. 평일 밤 11시 40분에 PC가 잠자기 상태면 깨워서 실행기를 켭니다. (전원이 완전히 꺼진 PC는 깨울 수 없습니다. 노트북은 전원을 연결해 두세요.)
+  - 실행 20분 전부터 실행이 끝날 때까지는 PC가 저절로 잠들지 않게 붙잡습니다. 노트북 덮개를 닫으면 그래도 잠듭니다.
+  - 그래도 놓친 밤이 있으면 휴대폰(텔레그램)으로 알리고, Mintory 위쪽에 "자동 실행 놓침" 표시가 뜹니다. 밀린 주문은 다음 자동 실행 때 목표 비중과 비교해 알아서 맞춥니다.
+  - 깨우기가 안 되면: 제어판 > 전원 옵션 > 고급 전원 관리 옵션 > 절전 > **절전 모드 해제 타이머 허용**을 "사용"으로 바꿔 주세요.
 - 상태는 `paper/agent.json`(다음 실행 시각, 마지막 결과), 기록은 `paper/logs/agent.log`에 남습니다.
-- 다음 실행 시각 확인: `python scripts/mintory_agent.py --status`
-- 윈도우 시작 시 자동 실행 해제: `python scripts/mintory_agent.py --uninstall-startup`
+- 다음 실행 시각 확인: `py scripts/mintory_agent.py --status`
+- 윈도우 시작 시 자동 실행과 깨우기 작업 해제: `py scripts/mintory_agent.py --uninstall-startup`
 
 ## 5. 업데이트 (update.bat 더블클릭)
 `update.bat`을 더블클릭하면 GitHub의 최신 코드를 받아 이 폴더에 덮어씁니다. ZIP을 받아 `.env`와 `paper` 폴더를 옮겨 붙일 필요가 없습니다.

@@ -10,6 +10,9 @@ Mintory 화면의 버튼(잔고 새로고침, 지금 매매 실행, 일시정지
 - 한국시간 월~금 밤 23:45에 `run_trader.py --mode kiwoom`을 실행한다(미국장 중).
   리밸런싱 날에만 주문하고 나머지 날은 기록과 대시보드 갱신만 한다.
 - 23:45 이후 새벽 5시 전에 켜졌는데 그날 실행이 아직이면 바로 실행한다.
+- 놓친 매매 대비: 23:40에 PC를 잠자기에서 깨우는 윈도우 작업을 등록하고, 실행 전후로는
+  PC가 잠들지 않게 붙잡는다. 그래도 놓친 날(PC가 꺼져 있던 밤)은 휴대폰으로 알리고,
+  밀린 주문은 다음 실행이 목표 비중과 비교해 알아서 맞춘다.
 - 화면은 http://127.0.0.1:47321 에서 보여준다. 이 주소는 이 PC 안에서만 열린다.
   같은 포트가 "이미 켜져 있음" 표시도 겸해서, 한 번에 하나만 돈다.
 - 일시정지는 paper/STOP 파일을 만들고 지우는 것과 같다(실행기가 STOP이 있으면 주문을 안 냄).
@@ -46,6 +49,9 @@ STATE = PAPER / "agent.json"
 STOP = PAPER / "STOP"
 LOG = PAPER / "logs" / "agent.log"
 STARTUP_NAME = "Mintory agent.bat"
+WAKE_TASK = "Mintory 자동 실행"
+WAKE_AT = (23, 40)         # KST, a few minutes before RUN_AT
+AWAKE_BEFORE = timedelta(minutes=20)
 WATCHED = [Path(__file__).resolve(), ROOT / "dashboard" / "build.py"]
 
 # What each button runs. Both use the Kiwoom mock account; there is no live mode here.
@@ -87,6 +93,54 @@ def next_run(now: datetime, last_day: str | None) -> datetime:
         if t > now and is_trading_evening(d.date().isoformat()) and d.date().isoformat() != last_day:
             return t
     raise AssertionError("unreachable")
+
+
+def missed_days(now: datetime, last_day: str | None, limit: int = 10) -> list[str]:
+    """Trading evenings after last_day whose run window is over without a run."""
+    if not last_day:
+        return []
+    today = datetime.fromisoformat(session_day(now))
+    last = datetime.fromisoformat(last_day)
+    days = []
+    for i in range(1, limit + 1):
+        d = today - timedelta(days=i)
+        if d <= last:
+            break
+        if is_trading_evening(d.date().isoformat()):
+            days.append(d.date().isoformat())
+    return sorted(days)
+
+
+def should_stay_awake(now: datetime, last_day: str | None) -> bool:
+    """Hold the PC awake from shortly before the run until it has run."""
+    return next_run(now, last_day) - now.astimezone(KST) <= AWAKE_BEFORE
+
+
+def stay_awake(on: bool) -> None:
+    """Ask Windows not to sleep while on (idle sleep only; a closed lid still sleeps)."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        flags = 0x80000000 | (0x00000001 if on else 0)  # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+        ctypes.windll.kernel32.SetThreadExecutionState(flags)
+    except Exception:  # noqa: BLE001 - best effort
+        pass
+
+
+WEEKDAY_KO = "월화수목금토일"
+
+
+def missed_message(days: list[str], next_iso: str | None) -> str:
+    when = ", ".join(f"{int(d[5:7])}/{int(d[8:10])}({WEEKDAY_KO[datetime.fromisoformat(d).weekday()]})"
+                     for d in days)
+    nxt = ""
+    if next_iso:
+        t = datetime.fromisoformat(next_iso)
+        nxt = f" ({t.month}/{t.day} {t:%H:%M})"
+    return (f"⚠️ Mintory 자동 실행을 놓쳤어요\n· {when} 밤\n"
+            "그 시각에 PC가 꺼져 있었거나 잠자기 상태였어요.\n"
+            f"밀린 주문은 다음 자동 실행{nxt} 때 알아서 맞춰집니다. 그 시각에 PC를 켜 두세요.")
 
 
 def now_iso() -> str:
@@ -313,10 +367,13 @@ def loop(restarted: bool = False) -> None:
     update_state(agent="running", job=None)
     while True:
         if code_mtime() != started and _job_lock.acquire(blocking=False):
+            stay_awake(False)
             restart(server)
             return
         state = read_state()
         now = datetime.now(KST)
+        check_missed(now, state)
+        stay_awake(should_stay_awake(now, state.get("last_day")))
         if due_now(now, state.get("last_day")):
             with _job_lock:  # waits for a button run to finish first
                 result = _run_job("auto")
@@ -328,6 +385,25 @@ def loop(restarted: bool = False) -> None:
                      next_run=next_run(datetime.now(KST), state.get("last_day"))
                      .isoformat(timespec="minutes"))
         time.sleep(60)
+
+
+def check_missed(now: datetime, state: dict) -> list[str]:
+    """Record missed evenings for the dashboard and send one phone alert per new miss."""
+    days = missed_days(now, state.get("last_day"))
+    new = [d for d in days if d > (state.get("missed_alerted") or "")]
+    changes: dict = {}
+    if days != state.get("missed", []):
+        changes["missed"] = days
+    if new:
+        log("자동 실행을 놓침: " + ", ".join(new))
+        from quant import notify
+        nxt = next_run(now, state.get("last_day")).isoformat(timespec="minutes")
+        if notify.send(missed_message(new, nxt)):
+            log("휴대폰 알림 보냄")
+        changes["missed_alerted"] = new[-1]
+    if changes:
+        update_state(**changes)
+    return days
 
 
 def agent_alive() -> bool:
@@ -397,6 +473,69 @@ def install_startup() -> Path:
     return target
 
 
+def wake_task_xml(pythonw: Path, script: Path) -> str:
+    """Task Scheduler task: Mon-Fri 23:40 KST, wakes the PC and starts the agent
+    (a second copy exits at once when one is already running)."""
+    from xml.sax.saxutils import escape
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>Mintory: 자동 매매 직전에 PC를 깨웁니다.</Description></RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-01-05T{WAKE_AT[0]:02d}:{WAKE_AT[1]:02d}:00+09:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByWeek>
+        <DaysOfWeek><Monday /><Tuesday /><Wednesday /><Thursday /><Friday /></DaysOfWeek>
+        <WeeksInterval>1</WeeksInterval>
+      </ScheduleByWeek>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <WakeToRun>true</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escape(str(pythonw))}</Command>
+      <Arguments>"{escape(str(script))}"</Arguments>
+      <WorkingDirectory>{escape(str(script.parents[1]))}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def install_wake_task() -> bool:
+    """Register (or refresh) the wake-up task. False when Windows refused it."""
+    if os.name != "nt":
+        return False
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    if not pythonw.exists():
+        pythonw = Path(sys.executable)
+    xml = PAPER / "wake_task.xml"
+    xml.parent.mkdir(parents=True, exist_ok=True)
+    xml.write_text(wake_task_xml(pythonw, Path(__file__).resolve()), encoding="utf-16")
+    try:
+        r = subprocess.run(["schtasks", "/Create", "/TN", WAKE_TASK, "/XML", str(xml), "/F"],
+                           capture_output=True, timeout=30)
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        xml.unlink(missing_ok=True)
+
+
+def uninstall_wake_task() -> None:
+    if os.name == "nt":
+        subprocess.run(["schtasks", "/Delete", "/TN", WAKE_TASK, "/F"], capture_output=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--install-startup", action="store_true")
@@ -407,8 +546,11 @@ def main() -> None:
     args = ap.parse_args()
     if args.install_startup:
         print(f"윈도우 시작 시 자동 실행 등록: {install_startup()}")
+        if install_wake_task():
+            print(f"평일 23:40에 PC를 깨우는 작업 등록: {WAKE_TASK}")
     elif args.uninstall_startup:
         startup_file().unlink(missing_ok=True)
+        uninstall_wake_task()
         print("자동 시작을 해제했습니다.")
     elif args.open:
         sys.exit(open_app())
@@ -426,6 +568,8 @@ def main() -> None:
         nxt = next_run(datetime.now(KST), state.get("last_day")).isoformat(timespec="minutes")
         print(f"다음 자동 실행: {nxt}")
         print(f"마지막 실행: {state.get('last_run') or '아직 없음'} ({state.get('last_result') or '-'})")
+        if state.get("missed"):
+            print("놓친 실행: " + ", ".join(state["missed"]))
     else:
         try:
             loop(restarted=args.restarted)

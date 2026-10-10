@@ -584,6 +584,10 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     badges.push('<span class="badge' + (failed ? " stale" : "") + '" title="' + esc((AG.last_run ? "마지막 실행 " + mdhm(AG.last_run) + " · " + (AG.last_result || "") : "") + (AG.checked_at ? " · 확인 " + mdhm(AG.checked_at) : "")) + '">' +
       '<span class="dot"' + (failed ? ' style="background:var(--up);box-shadow:0 0 0 3px var(--up-bg)"' : "") + "></span>" + esc(parts.join(" · ")) + "</span>");
   }
+  if (AG && AG.missed && AG.missed.length) {
+    var mdKo = function (d) { var dt = new Date(d + "T00:00:00"); return (+d.slice(5, 7)) + "/" + (+d.slice(8, 10)) + "(" + "일월화수목금토"[dt.getDay()] + ")"; };
+    badges.push('<span class="badge stale" title="' + esc("PC가 꺼져 있었거나 잠자기 상태라 " + AG.missed.map(mdKo).join(", ") + " 밤 자동 실행을 못 했어요. 밀린 주문은 다음 자동 실행 때 맞춰집니다.") + '">주의 · 자동 실행 놓침 ' + esc(AG.missed.map(mdKo).join(", ")) + "</span>");
+  }
   if (S.updated_at) {
     var age = days(parseDate(S.updated_at), today());
     badges.push('<span class="badge" title="기록 폴더: ' + esc(META.dir || "paper/") + '">' + ymd(S.updated_at) + " " + hm(S.updated_at) + " 업데이트</span>");
