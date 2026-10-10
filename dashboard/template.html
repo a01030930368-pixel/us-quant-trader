@@ -857,6 +857,20 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   function dayPct(q) {
     return q && q.change != null ? '<span class="dp ' + tone(q.change) + '">' + pct(q.change) + "</span>" : "";
   }
+  // US trading day (America/New_York) of an ISO time, e.g. a 00:18 KST fill belongs to the previous US day.
+  function usDay(iso) {
+    var d = new Date(iso);
+    return isNaN(d) ? "" : d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  }
+  function boughtToday(sym, session) {
+    var qty = 0, cost = 0;
+    TRADES.forEach(function (t) {
+      if (t.symbol !== sym || t.side !== "buy" || !(t.status === "filled" || t.status === "partial") || !+t.price) return;
+      if (usDay(t.time) !== session) return;
+      qty += +t.qty || 0; cost += (+t.qty || 0) * +t.price;
+    });
+    return { qty: qty, px: qty ? cost / qty : 0 };
+  }
   var baseSeries = series.slice();
   function applyLive(res) {
     var Q = (res && res.quotes) || {};
@@ -875,7 +889,11 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       var q = Q[p.symbol];
       if (!q) return;
       p.px = q.price; p.value = p.qty * q.price;
-      if (q.prev_close) { dAbs += p.qty * (q.price - q.prev_close); known = true; }
+      if (!q.prev_close) return;
+      // Shares bought during this session earn today's move from their fill price, not from yesterday's close.
+      var b = boughtToday(p.symbol, q.session), fresh = Math.min(p.qty, b.qty);
+      dAbs += (p.qty - fresh) * (q.price - q.prev_close) + fresh * (q.price - b.px);
+      known = true;
     });
     positions.sort(function (a, b) { return b.value - a.value; });
     invested = positions.reduce(function (a, p) { return a + p.value; }, 0);
