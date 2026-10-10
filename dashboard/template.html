@@ -153,6 +153,7 @@ button:focus-visible { outline: 2px solid var(--c3); outline-offset: 2px; }
 .legend i { width: 14px; height: 0; border-top: 2px solid; }
 .legend .ls i { border-color: var(--c1); }
 .legend .lb i { border-color: var(--dim); border-top-style: dashed; }
+.legend .lm i { border-color: var(--c3); border-top-style: dotted; }
 .legend .ld i { border-top-width: 8px; border-color: var(--down); opacity: 0.45; border-radius: 2px; }
 .chart { position: relative; flex: 1; min-height: 0; margin: 0 8px 10px 4px; }
 .chart svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; overflow: visible; }
@@ -413,6 +414,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
           <div class="legend">
             <span class="ls"><i></i><span id="legend-strat">전략</span></span>
             <span class="lb"><i></i><span id="legend-bench">SPY</span></span>
+            <span class="lm" id="legend-model" hidden title="같은 전략을 같은 날 같은 금액으로 백테스트했을 때"><i></i>백테스트</span>
             <span class="ld"><i></i>고점 대비 낙폭</span>
           </div>
           <div class="aside">
@@ -544,11 +546,14 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   var invested = positions.reduce(function (a, p) { return a + p.value; }, 0);
   var equity = invested + cash;
 
+  // 같은 전략을 같은 날, 같은 금액으로 백테스트한 평가금액 (실행기가 state.backtest에 남김)
+  var BT = S.backtest || null, MODEL = (BT && BT.series) || {};
   var series = EQ.map(function (e) {
     return {
       date: e.date, equity: +e.equity,
       ret: initial ? e.equity / initial - 1 : 0,
-      bench: e.benchmark_close != null && EQ[0].benchmark_close ? e.benchmark_close / EQ[0].benchmark_close - 1 : null
+      bench: e.benchmark_close != null && EQ[0].benchmark_close ? e.benchmark_close / EQ[0].benchmark_close - 1 : null,
+      model: MODEL[e.date] != null && initial ? MODEL[e.date] / initial - 1 : null
     };
   });
   var peak = initial;
@@ -557,6 +562,9 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   var last = series[series.length - 1] || null, prev = series[series.length - 2] || null;
   var totalRet = initial ? equity / initial - 1 : 0;
   var benchRet = last ? last.bench : null;
+  var lastModel = series.filter(function (p) { return p.model != null; }).pop() || null;
+  var modelRet = lastModel ? lastModel.model : null;
+  var modelGap = lastModel ? lastModel.ret - lastModel.model : null;  // 실제 - 백테스트 (같은 날 기준)
   var maxDD = series.reduce(function (m, p) { return Math.min(m, p.dd); }, 0);
   var dayAbs = last && prev ? last.equity - prev.equity : null;
   var dayRet = last && prev ? last.equity / prev.equity - 1 : null;
@@ -613,6 +621,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   renderKpis();
   $("legend-strat").textContent = strat.name || "전략";
   $("legend-bench").textContent = bench + " 보유";
+  $("legend-model").hidden = modelRet == null;
 
   // ---- chart ----
   var range = "all";
@@ -625,11 +634,13 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     if (!series.length) { box.innerHTML = '<div class="empty">아직 일별 기록이 없어요. 실행기가 하루 이상 돌면 그래프가 나타납니다.</div>'; return; }
     var pts = range === "all" ? series : series.slice(-Math.max(2, +range + 1));
     var b0 = pts[0], base = 1 + b0.ret, bbase = b0.bench == null ? null : 1 + b0.bench;
+    var m0 = pts.filter(function (p) { return p.model != null; })[0], mbase = m0 ? 1 + m0.model : null;
     var data = pts.map(function (p) {
       return {
         date: p.date, equity: p.equity, dd: p.dd, live: p.live,
         r: range === "all" ? p.ret : (1 + p.ret) / base - 1,
-        b: p.bench == null ? null : range === "all" ? p.bench : (1 + p.bench) / bbase - 1
+        b: p.bench == null ? null : range === "all" ? p.bench : (1 + p.bench) / bbase - 1,
+        m: p.model == null ? null : range === "all" ? p.model : (1 + p.model) / mbase * (1 + m0.ret) / base - 1
       };
     });
     if (range === "all") data.unshift({ date: null, equity: initial, dd: 0, r: 0, b: 0, origin: true });
@@ -638,7 +649,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     var ddH = Math.round(Math.min(110, Math.max(36, H * 0.2))), gapH = H < 260 ? 14 : 22;
     var mainH = H - top - axisH - ddH - gapH;
     var vals = [];
-    data.forEach(function (d) { vals.push(d.r); if (d.b != null) vals.push(d.b); });
+    data.forEach(function (d) { vals.push(d.r); if (d.b != null) vals.push(d.b); if (d.m != null) vals.push(d.m); });
     var lo = Math.min(0, Math.min.apply(null, vals)), hi = Math.max(0, Math.max.apply(null, vals));
     if (hi - lo < 0.01) { hi += 0.005; lo -= 0.005; }
     var step = niceStep(hi - lo, Math.max(3, Math.min(6, Math.round(mainH / 55))));
@@ -690,6 +701,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     var y0 = y(Math.max(lo, Math.min(hi, 0))).toFixed(1);
     s.push('<path d="' + line + "L" + x(n - 1).toFixed(1) + " " + y0 + "L" + x(0).toFixed(1) + " " + y0 + 'Z" fill="url(#g-s)"/>');
     s.push('<path d="' + path(function (p) { return p.b; }) + '" fill="none" stroke="var(--dim)" stroke-width="1.5" stroke-dasharray="4 4" stroke-linejoin="round"/>');
+    s.push('<path d="' + path(function (p) { return p.m; }) + '" fill="none" stroke="var(--c3)" stroke-width="1.6" stroke-dasharray="1.5 3" stroke-linecap="round" stroke-linejoin="round"/>');
     s.push('<path d="' + line + '" fill="none" stroke="var(--c1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>');
     var dd = "M" + x(0).toFixed(1) + " " + yd(0).toFixed(1);
     data.forEach(function (p, i) { dd += "L" + x(i).toFixed(1) + " " + yd(p.dd).toFixed(1); });
@@ -707,6 +719,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     s.push('<text x="' + (ex + 10) + '" y="' + ys.toFixed(1) + '" dy="0.32em" style="fill:var(--fg);font-weight:700">' + pct(L.r, 1) + "</text>");
     s.push('<g id="hv" visibility="hidden"><line id="hv-l" y1="' + top + '" y2="' + (ddTop + ddH) + '" stroke="var(--sub)" stroke-opacity="0.5" stroke-dasharray="2 3"/>' +
       '<circle id="hv-b" r="4" fill="var(--dim)" stroke="var(--panel)" stroke-width="2"/>' +
+      '<circle id="hv-m" r="3.5" fill="var(--c3)" stroke="var(--panel)" stroke-width="2"/>' +
       '<circle id="hv-s" r="5" fill="var(--c1)" stroke="var(--panel)" stroke-width="2"/>' +
       '<circle id="hv-d" r="3.5" fill="var(--down)" stroke="var(--panel)" stroke-width="2"/></g>');
     s.push('<rect id="hit" x="' + padL + '" y="0" width="' + (W - padL - padR) + '" height="' + H + '" fill="transparent" style="cursor:crosshair"/>');
@@ -725,10 +738,13 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       $("hv-d").setAttribute("cx", xx); $("hv-d").setAttribute("cy", yd(p.dd));
       $("hv-b").setAttribute("visibility", p.b == null ? "hidden" : "visible");
       if (p.b != null) { $("hv-b").setAttribute("cx", xx); $("hv-b").setAttribute("cy", y(p.b)); }
+      $("hv-m").setAttribute("visibility", p.m == null ? "hidden" : "visible");
+      if (p.m != null) { $("hv-m").setAttribute("cx", xx); $("hv-m").setAttribute("cy", y(p.m)); }
       tip.innerHTML = '<span class="d">' + (p.origin ? "시작" : (p.live ? "지금 · " : "") + ymd(p.date) + " (" + wk(p.date) + ")") + "</span>" +
         '<div class="row"><span>평가금액</span><b>' + usd(p.equity) + "</b></div>" +
         '<div class="row"><span><i style="background:var(--c1)"></i>전략</span><b class="' + tone(p.r) + '">' + pct(p.r) + "</b></div>" +
         (p.b != null ? '<div class="row"><span><i style="background:var(--dim)"></i>' + esc(bench) + '</span><b class="' + tone(p.b) + '">' + pct(p.b) + "</b></div>" : "") +
+        (p.m != null ? '<div class="row"><span><i style="background:var(--c3)"></i>백테스트</span><b class="' + tone(p.m) + '">' + pct(p.m) + "</b></div>" : "") +
         '<div class="row"><span><i style="background:var(--down)"></i>낙폭</span><b>' + pct(p.dd, 1) + "</b></div>";
       tip.hidden = false;
       var left = xx / W * r.width + 16;
@@ -994,12 +1010,13 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   // performance: one row per recorded day
   var perfView = {
     title: "수익률 자세히", btn: "perf-more", sort: { key: "date", asc: false }, ascKeys: ["date"],
-    foot: function () { return "하루에 한 줄, 그날 장 마감 기준이에요. 누적은 시작 원금 " + usd(initial) + " 대비이고, " + bench + "는 같은 날 사서 들고 있었을 때예요." + (LIVE.on ? " 맨 위 '지금' 줄은 실시간이에요." : ""); },
+    foot: function () { return "하루에 한 줄, 그날 장 마감 기준이에요. 누적은 시작 원금 " + usd(initial) + " 대비이고, " + bench + "는 같은 날 사서 들고 있었을 때예요." + (modelRet == null ? "" : " 백테스트는 같은 전략을 첫 기록일의 평가금액으로 시작해 장 마감 가격으로 사고팔았다고 계산한 값이에요.") + (LIVE.on ? " 맨 위 '지금' 줄은 실시간이에요." : ""); },
     draw: function (view, sub, body) {
       var rows = series.map(function (p, i) {
         var pv = i ? series[i - 1].equity : initial;
         return { date: p.date, live: p.live, equity: p.equity, day: p.equity - pv, dayRet: pv ? p.equity / pv - 1 : null,
-                 ret: p.ret, bench: p.bench, excess: p.bench == null ? null : p.ret - p.bench, dd: p.dd };
+                 ret: p.ret, bench: p.bench, excess: p.bench == null ? null : p.ret - p.bench,
+                 model: p.model, gap: p.model == null ? null : p.ret - p.model, dd: p.dd };
       });
       var days = rows.length, ups = rows.filter(function (r) { return r.day > 0; }).length;
       var best = rows.reduce(function (m, r) { return !m || r.dayRet > m.dayRet ? r : m; }, null);
@@ -1009,14 +1026,17 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       var stats = '<div class="m-stats">' +
         stat("누적 수익률", pct(totalRet), tone(totalRet), usdSigned(equity - initial)) +
         stat(bench + " 보유 시", pct(benchRet), tone(benchRet), benchRet == null ? "" : "차이 " + pct(totalRet - benchRet).replace("%", "%p")) +
+        (modelRet == null ? "" : stat("백테스트 대비", pct(modelGap).replace("%", "%p"), tone(modelGap),
+          "백테스트 " + pct(modelRet) + " · 수수료 " + (BT.cost_bps / 100).toFixed(2) + "%")) +
         stat("최대 낙폭", pct(maxDD, 1), maxDD < 0 ? "down" : "", "지금 " + pct(last ? last.dd : 0, 1)) +
         stat("가장 좋은 날", best ? pct(best.dayRet) : "—", best ? tone(best.dayRet) : "", best ? ymd(best.date) : "") +
         stat("가장 나쁜 날", worst ? pct(worst.dayRet) : "—", worst ? tone(worst.dayRet) : "", worst ? ymd(worst.date) : "") +
         stat("오른 날", days ? ups + " / " + days + "일" : "—", "", days ? pct(ups / days, 0, true) : "") + "</div>";
       body.innerHTML = stats + tableHtml([
         ["date", "날짜", "l"], ["equity", "평가금액"], ["day", "하루 손익"], ["dayRet", "하루 수익률"], ["ret", "누적 수익률"],
-        ["bench", bench + " 누적"], ["excess", bench + " 대비"], ["dd", "고점 대비 낙폭"]
-      ], view.sort, sortRows(rows, view.sort).map(function (r) {
+        ["bench", bench + " 누적"], ["excess", bench + " 대비"]].concat(modelRet == null ? [] : [["model", "백테스트 누적"], ["gap", "백테스트 대비"]]).concat([
+        ["dd", "고점 대비 낙폭"]
+      ]), view.sort, sortRows(rows, view.sort).map(function (r) {
         return '<tr><td class="l">' + (r.live ? "<b>지금</b> " : "") + ymd(r.date) + ' <span class="sub">(' + wk(r.date) + ")</span></td>" +
           "<td><b>" + usd(r.equity) + "</b></td>" +
           '<td class="' + tone(r.day) + '">' + usdSigned(r.day) + "</td>" +
@@ -1024,6 +1044,8 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
           '<td class="' + tone(r.ret) + '"><b>' + pct(r.ret) + "</b></td>" +
           '<td class="' + tone(r.bench) + '">' + pct(r.bench) + "</td>" +
           '<td class="' + tone(r.excess) + '">' + (r.excess == null ? "—" : pct(r.excess).replace("%", "%p")) + "</td>" +
+          (modelRet == null ? "" : '<td class="' + tone(r.model) + '">' + pct(r.model) + "</td>" +
+            '<td class="' + tone(r.gap) + '">' + (r.gap == null ? "—" : pct(r.gap).replace("%", "%p")) + "</td>") +
           '<td class="' + (r.dd < 0 ? "down" : "sub") + '">' + pct(r.dd, 1) + "</td></tr>";
       }).join(""));
     }

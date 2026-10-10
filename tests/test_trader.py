@@ -456,3 +456,46 @@ def test_safety_limits_from_env():
         "max_order_usd": 50_000.0, "max_daily_loss": 0.08}
     assert safety_limits({"MAX_DAILY_LOSS_PCT": "0"}) == {"max_daily_loss": None}
     assert safety_limits({"MAX_ORDER_USD": "lots"}) == {}
+
+
+# -- backtest comparison -------------------------------------------------------
+
+def test_model_weights_match_runner_targets(close):
+    from quant.trader.runner import model_weights, staggered_targets
+    px = canary_close(close)
+    cfg = TraderConfig(canary=("EEM",), tranches=4)
+    today = pd.Timestamp("2026-10-08")              # a run during the 10/8 session
+    rows, sig = staggered_targets(px, today, cfg)
+    got = {}
+    for t in rows:
+        got[t["symbol"]] = got.get(t["symbol"], 0.0) + t["weight"] * (1 - cfg.cash_buffer)
+    w = model_weights(px.loc[:today], cfg).loc[sig]
+    assert got == pytest.approx({k: v for k, v in w.items() if v > 1e-9})
+
+
+def test_shadow_backtest_follows_model_returns(close):
+    from quant.trader.runner import model_weights, shadow_backtest
+    cfg = TraderConfig()
+    rows = [{"date": "2026-10-01", "equity": 10_000.0}, {"date": "2026-10-02", "equity": 10_050.0},
+            {"date": "2026-10-05", "equity": 9_990.0}]
+    bt = shadow_backtest(close, cfg, rows, cost_bps=0)
+    assert bt["from"] == "2026-10-01" and list(bt["series"]) == ["2026-10-01", "2026-10-02", "2026-10-05"]
+    w = model_weights(close, cfg)
+    r = close.pct_change()
+    want = 10_000.0
+    for d in ["2026-10-02", "2026-10-05"]:
+        prev = close.index[close.index.get_loc(pd.Timestamp(d)) - 1]
+        want *= 1 + (w.loc[prev] * r.loc[d]).sum()
+    assert bt["series"]["2026-10-05"] == pytest.approx(want, abs=0.01)
+    assert shadow_backtest(close, cfg, [], 10) is None
+
+
+def test_runner_writes_backtest_and_keeps_it_when_paused(tmp_path, close):
+    r = make_runner(tmp_path)
+    r.run(close=close.loc[:"2026-10-06"], now=datetime(2026, 10, 6, 15, tzinfo=timezone.utc))
+    st = r.run(close=close.loc[:"2026-10-07"], now=datetime(2026, 10, 7, 15, tzinfo=timezone.utc))
+    assert st["backtest"]["cost_bps"] == 10.0
+    assert set(st["backtest"]["series"]) == {"2026-10-06", "2026-10-07"}
+    (r.dir / "STOP").write_text("x")
+    paused = r.run(close=close, now=datetime(2026, 10, 8, 15, tzinfo=timezone.utc))
+    assert paused["backtest"] == st["backtest"]
