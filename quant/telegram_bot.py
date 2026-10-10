@@ -9,6 +9,7 @@
     /status   상태        다음 자동 실행, 마지막 실행 결과, 일시정지 여부
     /next     다음        다음 리밸런싱 날짜와 예상 주문
     /check    점검        실계좌 전환 점검표
+    /tax      세금        올해 양도소득세 추정 (원화)
     /pause    일시정지    자동 매매가 주문을 내지 않게 멈춤
     /resume   재개        다시 주문
     /help     도움말 (/? 나 ? 도 됨)
@@ -30,13 +31,14 @@ COMMANDS = [
     ("status", "상태", "다음 자동 실행과 마지막 결과"),
     ("next", "다음", "다음 리밸런싱 예상 주문"),
     ("check", "점검", "실계좌 전환 점검표"),
+    ("tax", "세금", "올해 양도소득세 추정 (원화)"),
     ("pause", "일시정지", "자동 매매 주문 멈추기"),
     ("resume", "재개", "자동 매매 주문 다시 하기"),
     ("help", "도움말", "명령 목록"),
 ]
-ICONS = {"balance": "💰", "refresh": "🔄", "status": "📋", "next": "📣", "check": "🧾", "pause": "⏸", "resume": "▶️", "help": "❓"}
+ICONS = {"balance": "💰", "refresh": "🔄", "status": "📋", "next": "📣", "check": "🧾", "tax": "🧮", "pause": "⏸", "resume": "▶️", "help": "❓"}
 ALIASES = {ko: en for en, ko, _ in COMMANDS} | {
-    "start": "help", "?": "help", "？": "help", "명령": "help", "명령어": "help", "도움": "help", "정지": "pause", "멈춰": "pause", "다시시작": "resume",
+    "start": "help", "?": "help", "양도세": "tax", "환율": "tax", "？": "help", "명령": "help", "명령어": "help", "도움": "help", "정지": "pause", "멈춰": "pause", "다시시작": "resume",
 }
 MAX_AGE = 600  # seconds; older messages (sent while the PC was off) are ignored
 WEEKDAY_KO = "월화수목금토일"
@@ -52,6 +54,7 @@ class Actions:
     refresh: Callable[[], str | None]  # run a balance check; None when another run is going
     quotes: Callable[[list[str]], dict] | None = None
     readiness: Callable[[], dict] | None = None
+    tax: Callable[[], dict | None] | None = None
 
 
 def command(text: str) -> str | None:
@@ -65,6 +68,33 @@ def command(text: str) -> str | None:
 
 def _usd(v: float) -> str:
     return f"${v:,.2f}"
+
+
+def _won(v: float) -> str:
+    return f"₩{round(v):,}" if v >= 0 else f"-₩{round(-v):,}"
+
+
+def _won_signed(v: float) -> str:
+    return ("+" if v > 0 else "") + _won(v)
+
+
+def tax_text(t: dict | None, mode: str | None = None) -> str:
+    if not t:
+        return ("🧮 아직 환율 기록이 없어 계산하지 못했어요.\n\n"
+                "오늘 밤 자동 실행(또는 Mintory 잔고 새로고침) 뒤에 다시 보내 주세요.")
+    blocks = [f"🧮 {t['year']}년 양도소득세 추정\n💱 환율 {t['usdkrw']:,.1f}원 기준",
+              "\n".join([f"📈 실현 손익 {_won_signed(t['realized_krw'])} ({_usd(t['realized_usd'])}, 매도 {t['sells']}건)",
+                         f"➖ 기본공제 {_won(t['deduction_krw'])}",
+                         f"🧾 과세표준 {_won(t['taxable_krw'])}",
+                         f"💸 예상 세금 (22%) {_won(t['tax_krw'])}"]),
+              "\n".join(["📦 지금 모두 판다면",
+                         f"· 평가손익 {_won_signed(t['unrealized_krw'])}",
+                         f"· 올해 예상 세금 {_won(t['tax_if_sold_krw'])}"])]
+    note = "💡 1년 손익을 합쳐 250만 원을 뺀 뒤 22%, 다음 해 5월 신고. 참고용 추정이에요."
+    if mode and mode != "kiwoom_live":
+        note += "\n지금은 모의투자 기록이라 실제로 낼 세금은 없어요."
+    blocks.append(note)
+    return "\n\n".join(blocks)
 
 
 def _when(iso: str | None) -> str:
@@ -101,6 +131,9 @@ def balance_text(state: dict, quotes: dict | None = None, paused: bool = False) 
     basis = (f"시세 {_when(quotes.get('as_of'))}" if q
              else f"기록 {_when(state.get('updated_at'))}")
     head = [f"💵 평가금액 {_usd(total)}"]
+    fx = float((state.get("fx") or {}).get("usdkrw") or 0)
+    if fx:
+        head.append(f"🇰🇷 약 {_won(total * fx)} (환율 {fx:,.1f}원)")
     initial = float(state.get("initial_capital") or 0)
     if initial:
         head.append(f"📊 누적 {(total / initial - 1) * 100:+.2f}%")
@@ -188,6 +221,8 @@ def handle(text: str, act: Actions) -> str:
         if not act.readiness:
             return "🧾 점검표를 불러오지 못했어요."
         return readiness_text(act.readiness())
+    if cmd == "tax":
+        return tax_text(act.tax() if act.tax else None, act.state().get("mode"))
     if cmd == "status":
         return status_text(act.state(), act.agent(), act.paused())
     if cmd == "pause":

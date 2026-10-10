@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from quant.trader.brokers import KiwoomBroker, SimBroker  # noqa: E402
+from quant.trader.brokers import KiwoomBroker, ReadOnlyBroker, SimBroker  # noqa: E402
 from quant.trader.runner import Runner, TraderConfig  # noqa: E402
 from scripts.kiwoom_mock_check import load_env  # noqa: E402
 
@@ -41,16 +41,19 @@ def main() -> None:
     ap.add_argument("--sim-cash", type=float, default=10_000.0, help="가상 계좌 시작금(USD)")
     ap.add_argument("--open", action="store_true", help="끝나면 Mintory 대시보드를 브라우저로 열기")
     ap.add_argument("--no-dashboard", action="store_true", help="대시보드를 새로 만들지 않음")
+    ap.add_argument("--rehearsal", action="store_true",
+                    help="실계좌 리허설: 실계좌 잔고만 읽고 낼 주문을 paper/rehearsal 에 기록 (주문 없음)")
     args = ap.parse_args()
 
     load_env()
     cfg = TraderConfig(aggr_share=args.aggr_share, **STRATEGIES[args.strategy], **safety_limits())
+    if args.rehearsal:
+        rehearse(cfg)
+        return
     if args.mode == "sim":
         broker = SimBroker(cfg.state_dir / "sim_account.json", starting_cash=args.sim_cash)
     else:
-        broker = KiwoomBroker.from_env(mock=True, exchanges={
-            "SPY": "NY", "IWM": "NY", "EFA": "NY", "GLD": "NY", "IEF": "ND",
-            "TLT": "ND", "QQQ": "ND", "TQQQ": "ND", "UPRO": "NY"})
+        broker = KiwoomBroker.from_env(mock=True, exchanges=EXCHANGES)
 
     mode = "simulate" if args.mode == "sim" else "kiwoom_mock"
     from quant import notify
@@ -65,6 +68,27 @@ def main() -> None:
     print("자세한 상태: paper/state.json")
     if not args.no_dashboard:
         build_dashboard(cfg.state_dir, open_browser=args.open)
+
+
+EXCHANGES = {"SPY": "NY", "IWM": "NY", "EFA": "NY", "GLD": "NY", "IEF": "ND",
+             "TLT": "ND", "QQQ": "ND", "TQQQ": "ND", "UPRO": "NY"}
+
+
+def rehearse(cfg: TraderConfig) -> None:
+    """Live-account rehearsal: read the real account with the live keys and
+    record what the strategy would order there. Orders are impossible twice
+    over: the broker is read-only and the run is a check (execute=False).
+    Records go to paper/rehearsal, apart from the paper-trading records."""
+    from dataclasses import replace
+    key, secret = os.getenv("KIWOOM_LIVE_APP_KEY"), os.getenv("KIWOOM_LIVE_SECRET_KEY")
+    if not key or not secret:
+        raise SystemExit(".env 에 KIWOOM_LIVE_APP_KEY, KIWOOM_LIVE_SECRET_KEY 가 없어 리허설을 건너뜁니다.")
+    broker = ReadOnlyBroker(KiwoomBroker(key, secret, mock=False, exchanges=EXCHANGES))
+    cfg = replace(cfg, state_dir=Path(cfg.state_dir) / "rehearsal")
+    status = Runner(broker, cfg, mode="kiwoom_live").run(execute=False)
+    print(f"리허설 (주문 없음): 현금 {status['cash']}, 예정 주문 {len(status.get('planned_orders') or [])}건")
+    for a in status["alerts"]:
+        print(f"  [{a['level']}] {a['message']}")
 
 
 def safety_limits(env=None) -> dict:

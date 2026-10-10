@@ -141,6 +141,11 @@ class KiwoomBroker:
             # None of these means the request ran.
             busy = r.status_code == 429 or any(
                 k in msg for k in ("초과", "지연", "재시도", "Timeover", "timeover"))
+            # An expired or revoked token is refused before the request runs:
+            # get a new one and send again.
+            if attempt < retries and (r.status_code == 401 or "토큰" in msg or "token" in msg.lower()):
+                self._token, self._token_exp = None, 0.0
+                continue
             if attempt < retries and (r.status_code >= 500 or busy):
                 time.sleep((10 if busy else 2) * (attempt + 1))
                 continue
@@ -235,3 +240,21 @@ def _num(value) -> float:
         return float(text) if text else 0.0
     except ValueError:
         return 0.0
+
+
+class ReadOnlyBroker:
+    """Wraps a broker so it can read the account but never order.
+
+    Used by the live-account rehearsal: real balances, no real orders."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    def positions(self) -> dict[str, dict]:
+        return self.inner.positions()
+
+    def cash_usd(self) -> float:
+        return self.inner.cash_usd()
+
+    def place_order(self, *a, **kw) -> dict:
+        raise RuntimeError("리허설 중에는 주문을 내지 않습니다.")

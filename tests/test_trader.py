@@ -559,3 +559,102 @@ def test_runner_writes_preview(tmp_path, close):
     assert st["preview"]["order_date"] and "orders" in st["preview"]
     (r.dir / "STOP").write_text("x")
     assert r.run(close=close, now=datetime(2026, 10, 8, 16, tzinfo=timezone.utc))["preview"] == st["preview"]
+
+
+def test_kiwoom_gets_a_new_token_when_refused(monkeypatch):
+    from quant.trader import brokers
+    b = brokers.KiwoomBroker("k", "s")
+    tokens = iter(["T1", "T2"])
+    monkeypatch.setattr(b, "token", lambda: b._token or setattr(b, "_token", next(tokens)) or b._token)
+    seen = []
+
+    class R:
+        def __init__(self, code, body):
+            self.status_code, self._body, self.content = code, body, b"x"
+            self.ok = code == 200
+
+        def json(self):
+            return self._body
+
+    replies = [R(401, {"return_code": 3, "return_msg": "토큰이 유효하지 않습니다"}), R(200, {"return_code": 0, "ok": 1})]
+
+    def post(url, headers, json, timeout):
+        seen.append(headers["authorization"])
+        return replies.pop(0)
+
+    monkeypatch.setattr(brokers.requests, "post", post)
+    monkeypatch.setattr(brokers.time, "sleep", lambda s: None)
+    assert b.call("/x", "id", {})["ok"] == 1
+    assert seen == ["Bearer T1", "Bearer T2"]
+
+
+# -- live-account rehearsal (never orders) --------------------------------------
+def test_read_only_broker_refuses_orders(tmp_path):
+    from quant.trader.brokers import ReadOnlyBroker
+    b = ReadOnlyBroker(SimBroker(tmp_path / "a.json", starting_cash=5_000.0))
+    assert b.cash_usd() == 5_000.0 and b.positions() == {}
+    with pytest.raises(RuntimeError):
+        b.place_order("SPY", "buy", 1, 500.0)
+
+
+def test_rehearsal_records_planned_orders_without_ordering(tmp_path, close):
+    from quant.trader.brokers import ReadOnlyBroker
+    cfg = TraderConfig(state_dir=tmp_path / "rehearsal", max_order_usd=50_000)
+    inner = SimBroker(tmp_path / "a.json", starting_cash=10_000.0)
+    r = Runner(ReadOnlyBroker(inner), cfg, mode="kiwoom_live")
+    s = r.run(close=close, now=datetime(2026, 10, 8, 14, tzinfo=timezone.utc), execute=False)
+    assert s["planned_orders"] and all(o["side"] == "buy" for o in s["planned_orders"])
+    assert trades(r) == [] and inner.positions() == {} and inner.cash_usd() == 10_000.0
+    saved = json.loads((cfg.state_dir / "state.json").read_text(encoding="utf-8"))
+    assert saved["planned_orders"] == s["planned_orders"] and saved["mode"] == "kiwoom_live"
+
+
+def test_rehearsal_shows_the_live_order_limit_block(tmp_path, close):
+    from quant.trader.brokers import ReadOnlyBroker
+    cfg = TraderConfig(state_dir=tmp_path / "rehearsal")
+    r = Runner(ReadOnlyBroker(SimBroker(tmp_path / "a.json", starting_cash=10_000.0)), cfg, mode="kiwoom_live")
+    s = r.run(close=close, now=datetime(2026, 10, 8, 14, tzinfo=timezone.utc), execute=False)
+    assert "MAX_ORDER_USD" in errors(s) and "planned_orders" not in s
+
+
+def test_run_trader_rehearse_uses_live_keys_read_only(monkeypatch, tmp_path, close):
+    from quant.trader import brokers, runner
+    from scripts import run_trader
+
+    made = []
+
+    class FakeKiwoom(SimBroker):
+        def __init__(self, key, secret, mock=True, exchanges=None):
+            made.append((key, secret, mock))
+            super().__init__(tmp_path / "live.json", starting_cash=20_000.0)
+
+        def place_order(self, *a, **kw):  # pragma: no cover - must never be reached
+            raise AssertionError("rehearsal placed an order")
+
+    monkeypatch.setattr(run_trader, "KiwoomBroker", FakeKiwoom)
+    monkeypatch.setattr(runner, "load_prices", lambda *a, **kw: close)
+    monkeypatch.setattr(runner, "datetime", type("D", (), {
+        "now": staticmethod(lambda tz=None: datetime(2026, 10, 8, 14, tzinfo=timezone.utc))}))
+    monkeypatch.delenv("KIWOOM_LIVE_APP_KEY", raising=False)
+    cfg = TraderConfig(state_dir=tmp_path / "paper", max_order_usd=50_000)
+    with pytest.raises(SystemExit):
+        run_trader.rehearse(cfg)
+    monkeypatch.setenv("KIWOOM_LIVE_APP_KEY", "k")
+    monkeypatch.setenv("KIWOOM_LIVE_SECRET_KEY", "s")
+    run_trader.rehearse(cfg)
+    assert made == [("k", "s", False)]
+    state = json.loads((tmp_path / "paper" / "rehearsal" / "state.json").read_text(encoding="utf-8"))
+    assert state["planned_orders"] and not (tmp_path / "paper" / "state.json").exists()
+    assert brokers.ReadOnlyBroker is run_trader.ReadOnlyBroker
+
+
+def test_exchange_rate_is_recorded_for_won_view(tmp_path, close):
+    r = make_runner(tmp_path)
+    r.fx_source = lambda: 1388.5
+    s = r.run(close=close, now=datetime(2026, 10, 8, 14, tzinfo=timezone.utc))
+    assert s["fx"]["usdkrw"] == 1388.5
+    assert all(x["fx"] == 1388.5 for x in trades(r))
+    eq = [json.loads(x) for x in (r.dir / "equity.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert eq[-1]["usdkrw"] == 1388.5
+    r.fx_source = lambda: None                       # rate unavailable: keep the last one
+    assert r.run(close=close, now=datetime(2026, 10, 8, 14, tzinfo=timezone.utc))["fx"]["usdkrw"] == 1388.5

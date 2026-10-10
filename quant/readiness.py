@@ -142,6 +142,8 @@ def checklist(paper: Path, env: dict, agent: dict | None = None, today: date | N
         out.append(item("api", "실계좌 연결 확인 (조회만)", "fail",
                         f"{chk.get('time', '')[:16].replace('T', ' ')} 실패: {chk.get('error', '')}"))
 
+    out.append(rehearsal_item(paper, today))
+
     if wake is not None:
         out.append(item("wake", "PC 깨우기 작업", "ok" if wake else "warn",
                         "평일 23:40에 PC를 깨워요" if wake else "Mintory를 한 번 다시 열면 등록돼요"))
@@ -160,6 +162,27 @@ def checklist(paper: Path, env: dict, agent: dict | None = None, today: date | N
     out.append(item("paused", "일시정지", "warn" if paused else "ok",
                     "일시정지 중이에요. 전환 전에 풀어 주세요" if paused else "꺼져 있음"))
     return out
+
+
+def rehearsal_item(paper: Path, today: date) -> dict:
+    """The latest live-account rehearsal (paper/rehearsal/state.json): real balances,
+    the orders the strategy would have sent, and anything that would have blocked them."""
+    title = "실계좌 리허설 (주문 없음)"
+    st = _json(paper / "rehearsal" / "state.json")
+    if not st:
+        return item("rehearsal", title, "todo",
+                    "실계좌 앱키를 넣으면 매일 밤 자동 실행 뒤에 실계좌 잔고로 리허설해요. '리허설 해보기'로 바로 해볼 수도 있어요")
+    when = str(st.get("updated_at", ""))[:16].replace("T", " ")
+    errors = [a.get("message", "") for a in st.get("alerts") or [] if a.get("level") == "error"]
+    if errors:
+        return item("rehearsal", title, "warn", f"{when} · 실계좌였다면 막혔어요: {errors[0]}")
+    orders = st.get("planned_orders") or []
+    plan = ", ".join(f"{'매수' if o.get('side') == 'buy' else '매도'} {o.get('symbol')} {o.get('qty')}주"
+                     for o in orders[:4]) or "리밸런싱 날이 아니라 낼 주문 없음"
+    stale = when[:10] < (today - timedelta(days=4)).isoformat()
+    cash = st.get("cash")
+    note = f"{when} · 달러 예수금 ${float(cash):,.2f} · {plan}" if cash is not None else f"{when} · {plan}"
+    return item("rehearsal", title, "warn" if stale else "ok", note + (" · 며칠째 리허설이 없어요" if stale else ""))
 
 
 def summary(items: list[dict]) -> dict:

@@ -14,7 +14,7 @@ import pandas as pd
 
 TTL = 15            # seconds a fetched quote set is reused
 MAX_SYMBOLS = 12
-SYMBOL = re.compile(r"^\^?[A-Z][A-Z0-9.\-]{0,9}$")  # ^GSPC etc. are Yahoo index symbols
+SYMBOL = re.compile(r"^\^?[A-Z][A-Z0-9.\-]{0,9}(=X)?$")  # ^GSPC: Yahoo index, KRW=X: won per dollar
 
 _lock = threading.Lock()
 _cache: dict[tuple, tuple[float, dict]] = {}
