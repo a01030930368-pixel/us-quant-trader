@@ -134,6 +134,13 @@ def run_trader(args: list[str] = JOBS["run"]) -> int:
     return proc.returncode
 
 
+def count_lines(path: Path) -> int:
+    try:
+        return sum(1 for line in path.read_text(encoding="utf-8-sig").splitlines() if line.strip())
+    except OSError:
+        return 0
+
+
 # -- jobs: one trader run at a time, whether from the schedule or a button ------
 _job_lock = threading.Lock()
 _job: dict = {"name": None, "started": None}
@@ -145,12 +152,17 @@ def _run_job(name: str) -> str:
     update_state(agent="trading" if name != "refresh" else "refreshing", job=name,
                  checked_at=_job["started"])
     log(f"{JOB_NAMES[name]} 시작")
+    trades_before = count_lines(PAPER / "trades.jsonl")
     try:
         code = run_trader(JOBS.get(name, JOBS["run"]))
         result = "ok" if code == 0 else f"error (exit {code})"
     except Exception as e:  # noqa: BLE001 - a failed run must not kill the agent
         result = f"error ({e})"
     log(f"{JOB_NAMES[name]} 종료: {result}")
+    if name != "refresh":
+        from quant import notify
+        if notify.notify_run(name, result, PAPER, trades_before):
+            log("휴대폰 알림 보냄")
     update_state(agent="running", job=None,
                  last_job={"name": name, "finished": now_iso(), "result": result})
     _job.update(name=None, started=None)
