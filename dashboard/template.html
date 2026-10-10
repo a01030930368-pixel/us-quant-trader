@@ -1457,14 +1457,13 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     var paintIndices = function (q) {
       var html = INDEX.map(function (ix) {
         var d = q[ix[0]];
-        if (!d) return "";
+        if (!d) return '<div class="ix"><span class="n">' + esc(ix[1]) + '</span><span class="v" style="color:var(--dim)">—</span></div>';
         var ch = d.change, col = ch > 0 ? "var(--up)" : ch < 0 ? "var(--down)" : "var(--sub)";
         return '<div class="ix" title="' + esc(ix[1] + " · " + (d.session || "")) + '"><span class="n">' + esc(ix[1]) + '</span><span class="v">' +
           Number(d.price).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) +
           (ch == null ? "" : '<span class="c" style="color:' + col + '">' + (ch > 0 ? "▲ " : ch < 0 ? "▼ " : "") + Math.abs(ch * 100).toFixed(2) + "%</span>") +
           ixSpark(d.spark, col) + "</span></div>";
       }).join("");
-      if (!html) return;
       $("indices").innerHTML = html;
       $("indices").hidden = false;
       $("title-strat").hidden = true;
@@ -1477,10 +1476,12 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
         .then(function (res) {
           var q = res.quotes || {}, fresh = Object.keys(q).some(function (k) { return q[k].time && Date.now() - new Date(q[k].time).getTime() < 20 * 60 * 1000; });
           paintIndices(q);
-          ixTimer = setTimeout(pollIndices, fresh ? 15000 : 10 * 60 * 1000);  // 장 마감 뒤에는 10분마다
+          // 장중 15초, 장 마감 뒤 10분, 못 받았으면 1분 뒤 다시
+          ixTimer = setTimeout(pollIndices, !Object.keys(q).length ? 60000 : fresh ? 15000 : 10 * 60 * 1000);
         })
         .catch(function () { ixTimer = setTimeout(pollIndices, 60000); });
     };
+    paintIndices({});  // 받기 전에도 자리는 지수로 (못 받으면 — 로 표시)
     pollIndices();
   }
 
