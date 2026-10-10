@@ -13,7 +13,7 @@ import os
 import subprocess
 import sys
 import webbrowser
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -21,7 +21,8 @@ ROOT = HERE.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from quant import market_calendar  # noqa: E402
+from quant import market_calendar
+
 TEMPLATE = HERE / "template.html"
 SAMPLE_DIR = HERE / "sample"
 PLACEHOLDER = "/*__DASHBOARD_DATA__*/"
@@ -95,7 +96,7 @@ def page(data_dir: Path | None, *, full_page: bool = True, extra: dict | None = 
         "source": source,
         "dir": str(shown).replace("\\", "/") + "/",
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "market": market_calendar.upcoming(date.today() - timedelta(days=7)),  # 미국장 시계용 휴장일
+        "market": market_calendar.upcoming(datetime.now().astimezone().date() - timedelta(days=7)),  # 미국장 시계용 휴장일
     }
     data.update(extra or {})
     return render(data, full_page=full_page)

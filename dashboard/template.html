@@ -1499,7 +1499,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   var CTL = DATA.control;
   if (CTL && /^https?:$/.test(location.protocol)) {
     var ctlBox = $("controls"), btnRefresh = $("btn-refresh"), btnRun = $("btn-run"), btnPause = $("btn-pause");
-    var JOBS = { refresh: "새로고침 중…", run: "매매 실행 중…", auto: "자동 실행 중…" };
+    var JOBS = { refresh: "새로고침 중…", run: "매매 실행 중…", auto: "자동 실행 중…", rehearsal: "실계좌 리허설 중…" };
     var LABELS = { refresh: "잔고 새로고침", run: "지금 매매 실행" };
     var ICON_SPIN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M8 2.5a5.5 5.5 0 1 1-5.5 5.5"/></svg>';
     var ICON_PLAY = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 2.8v10.4a.6.6 0 0 0 .92.5l8.1-5.2a.6.6 0 0 0 0-1L5.42 2.3a.6.6 0 0 0-.92.5z"/></svg>';
@@ -1542,6 +1542,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
         paint(c);
         if (wasBusy && !c.busy) {
           var lj = c.last_job || {};
+          if (lj.name === "rehearsal") { wasBusy = false; pollTimer = setTimeout(poll, 30000); return; }  // paper records unchanged
           if (lj.result && lj.result !== "ok") toast((JOBS[lj.name] || "작업").replace(" 중…", "") + "에 실패했어요. 자세한 내용은 paper/logs/agent.log에 있어요.");
           setTimeout(function () { location.reload(); }, lj.result && lj.result !== "ok" ? 2500 : 0);
           return;
@@ -1598,11 +1599,13 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       back.innerHTML = '<div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="r-title" style="width:min(900px,100%)">' +
         '<div class="m-head"><h3 id="r-title">실계좌 전환 점검표</h3><span class="sub">불러오는 중…</span>' +
         '<button type="button" class="ctl mini" data-act="keys" title="실계좌 앱키로 토큰을 받고 달러 예수금만 조회해요. 주문은 내지 않아요.">실계좌 키 확인 (조회만)</button>' +
+        '<button type="button" class="ctl mini" data-act="rehearse" title="실계좌 잔고를 읽어 오늘 전략이 실계좌에서 낼 주문을 계산해요. 주문은 내지 않아요.">리허설 해보기</button>' +
         '<button type="button" class="ctl x" data-act="close">닫기</button></div>' +
         '<div class="m-body"></div>' +
         '<div class="m-foot">점검만 해요. 실행기는 계속 모의투자로 돌고, 실계좌 전환은 모든 항목을 확인한 뒤 따로 진행해요.</div></div>';
       document.body.appendChild(back);
-      var sub = back.querySelector(".sub"), body = back.querySelector(".m-body"), keyBtn = back.querySelector('[data-act="keys"]');
+      var sub = back.querySelector(".sub"), body = back.querySelector(".m-body"), keyBtn = back.querySelector('[data-act="keys"]'),
+          rehBtn = back.querySelector('[data-act="rehearse"]');
       var draw = function (r) {
         var sm = r.summary || {};
         sub.textContent = sm.ready ? "모두 준비됐어요" : (sm.total || 0) + "개 중 " + (sm.ok || 0) + "개 준비됨";
@@ -1625,6 +1628,10 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
         if (act && act.getAttribute("data-act") === "keys") {
           keyBtn.disabled = true; keyBtn.textContent = "확인 중…";
           load("/api/live-key-check", {}).then(function () { keyBtn.disabled = false; keyBtn.textContent = "실계좌 키 확인 (조회만)"; });
+        }
+        if (act && act.getAttribute("data-act") === "rehearse") {
+          rehBtn.disabled = true; rehBtn.textContent = "리허설 중… (1분쯤)";
+          load("/api/rehearsal", {}).then(function () { rehBtn.disabled = false; rehBtn.textContent = "리허설 해보기"; });
         }
       });
     };

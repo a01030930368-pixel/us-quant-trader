@@ -571,3 +571,63 @@ def test_kiwoom_gets_a_new_token_when_refused(monkeypatch):
     monkeypatch.setattr(brokers.time, "sleep", lambda s: None)
     assert b.call("/x", "id", {})["ok"] == 1
     assert seen == ["Bearer T1", "Bearer T2"]
+
+
+# -- live-account rehearsal (never orders) --------------------------------------
+def test_read_only_broker_refuses_orders(tmp_path):
+    from quant.trader.brokers import ReadOnlyBroker
+    b = ReadOnlyBroker(SimBroker(tmp_path / "a.json", starting_cash=5_000.0))
+    assert b.cash_usd() == 5_000.0 and b.positions() == {}
+    with pytest.raises(RuntimeError):
+        b.place_order("SPY", "buy", 1, 500.0)
+
+
+def test_rehearsal_records_planned_orders_without_ordering(tmp_path, close):
+    from quant.trader.brokers import ReadOnlyBroker
+    cfg = TraderConfig(state_dir=tmp_path / "rehearsal", max_order_usd=50_000)
+    inner = SimBroker(tmp_path / "a.json", starting_cash=10_000.0)
+    r = Runner(ReadOnlyBroker(inner), cfg, mode="kiwoom_live")
+    s = r.run(close=close, now=datetime(2026, 10, 8, 14, tzinfo=timezone.utc), execute=False)
+    assert s["planned_orders"] and all(o["side"] == "buy" for o in s["planned_orders"])
+    assert trades(r) == [] and inner.positions() == {} and inner.cash_usd() == 10_000.0
+    saved = json.loads((cfg.state_dir / "state.json").read_text(encoding="utf-8"))
+    assert saved["planned_orders"] == s["planned_orders"] and saved["mode"] == "kiwoom_live"
+
+
+def test_rehearsal_shows_the_live_order_limit_block(tmp_path, close):
+    from quant.trader.brokers import ReadOnlyBroker
+    cfg = TraderConfig(state_dir=tmp_path / "rehearsal")
+    r = Runner(ReadOnlyBroker(SimBroker(tmp_path / "a.json", starting_cash=10_000.0)), cfg, mode="kiwoom_live")
+    s = r.run(close=close, now=datetime(2026, 10, 8, 14, tzinfo=timezone.utc), execute=False)
+    assert "MAX_ORDER_USD" in errors(s) and "planned_orders" not in s
+
+
+def test_run_trader_rehearse_uses_live_keys_read_only(monkeypatch, tmp_path, close):
+    from quant.trader import brokers, runner
+    from scripts import run_trader
+
+    made = []
+
+    class FakeKiwoom(SimBroker):
+        def __init__(self, key, secret, mock=True, exchanges=None):
+            made.append((key, secret, mock))
+            super().__init__(tmp_path / "live.json", starting_cash=20_000.0)
+
+        def place_order(self, *a, **kw):  # pragma: no cover - must never be reached
+            raise AssertionError("rehearsal placed an order")
+
+    monkeypatch.setattr(run_trader, "KiwoomBroker", FakeKiwoom)
+    monkeypatch.setattr(runner, "load_prices", lambda *a, **kw: close)
+    monkeypatch.setattr(runner, "datetime", type("D", (), {
+        "now": staticmethod(lambda tz=None: datetime(2026, 10, 8, 14, tzinfo=timezone.utc))}))
+    monkeypatch.delenv("KIWOOM_LIVE_APP_KEY", raising=False)
+    cfg = TraderConfig(state_dir=tmp_path / "paper", max_order_usd=50_000)
+    with pytest.raises(SystemExit):
+        run_trader.rehearse(cfg)
+    monkeypatch.setenv("KIWOOM_LIVE_APP_KEY", "k")
+    monkeypatch.setenv("KIWOOM_LIVE_SECRET_KEY", "s")
+    run_trader.rehearse(cfg)
+    assert made == [("k", "s", False)]
+    state = json.loads((tmp_path / "paper" / "rehearsal" / "state.json").read_text(encoding="utf-8"))
+    assert state["planned_orders"] and not (tmp_path / "paper" / "state.json").exists()
+    assert brokers.ReadOnlyBroker is run_trader.ReadOnlyBroker

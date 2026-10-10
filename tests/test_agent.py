@@ -305,3 +305,42 @@ def test_no_retry_after_the_window():
     late = k(2026, 10, 13, 4, 55)
     assert agent.session_day(late + agent.RETRY_GAP) != agent.session_day(late)
     assert not agent.in_run_window(k(2026, 10, 13, 5, 5))
+
+
+def test_rehearsal_runs_after_the_nightly_run_and_reports_changes_only(tmp_path, monkeypatch):
+    from quant import notify
+    monkeypatch.setattr(agent, "STATE", tmp_path / "agent.json")
+    monkeypatch.setattr(agent, "LOG", tmp_path / "agent.log")
+    monkeypatch.setattr(agent, "PAPER", tmp_path)
+    monkeypatch.setattr(agent, "REHEARSAL", tmp_path / "rehearsal")
+    jobs, sent = [], []
+    plan = [{"side": "buy", "symbol": "QQQ", "qty": 3, "value": 1500.0}]
+
+    def fake_trader(args):
+        jobs.append(args)
+        if "--rehearsal" in args:
+            (tmp_path / "rehearsal").mkdir(exist_ok=True)
+            (tmp_path / "rehearsal" / "state.json").write_text(json.dumps(
+                {"cash": 1000.0, "alerts": [], "planned_orders": plan}), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(agent, "run_trader", fake_trader)
+    monkeypatch.setattr(notify, "notify_run", lambda *a: True)
+    monkeypatch.setattr(notify, "notify_rehearsal", lambda result, d: sent.append(result) or True)
+    env = {"KIWOOM_LIVE_APP_KEY": "k", "KIWOOM_LIVE_SECRET_KEY": "s"}
+    monkeypatch.setattr(notify, "read_env", lambda: env)
+
+    agent.run_auto(k(2026, 10, 12, 23, 45))
+    assert jobs == [agent.JOBS["run"], agent.JOBS["rehearsal"]] and sent == ["ok"]
+    assert agent.rehearse("2026-10-12") is None                     # once per evening
+    agent.run_auto(k(2026, 10, 13, 23, 45))                         # same plan: no message
+    assert len(jobs) == 4 and sent == ["ok"]
+    plan.append({"side": "sell", "symbol": "IEF", "qty": 1, "value": 90.0})
+    agent.run_auto(k(2026, 10, 14, 23, 45))                         # plan changed: message
+    assert sent == ["ok", "ok"]
+    env["REHEARSAL"] = "0"
+    agent.run_auto(k(2026, 10, 15, 23, 45))
+    assert len(jobs) == 7                                           # switched off
+    env.clear()
+    assert not agent.rehearsal_on(env)                              # no live keys: never runs
+    assert "--rehearsal" in agent.JOBS["rehearsal"] and "--check" in agent.JOBS["rehearsal"]

@@ -60,12 +60,16 @@ AWAKE_BEFORE = timedelta(minutes=20)
 # quotes, quant/readiness.py the checklist, ...). quant/trader runs in a subprocess.
 WATCHED = [Path(__file__).resolve(), ROOT / "dashboard" / "build.py", *sorted((ROOT / "quant").glob("*.py"))]
 
-# What each button runs. Both use the Kiwoom mock account; there is no live mode here.
+# What each job runs. Trading uses the Kiwoom mock account; there is no live order mode here.
 JOBS = {
     "refresh": ["--mode", "kiwoom", "--check"],   # read balances only, never orders
     "run": ["--mode", "kiwoom"],                  # the same run as the 23:45 schedule
+    # live-account rehearsal: reads the real account, records planned orders, never orders
+    "rehearsal": ["--rehearsal", "--check", "--no-dashboard"],
 }
-JOB_NAMES = {"refresh": "잔고 새로고침", "run": "매매 실행", "auto": "자동 매매 실행"}
+JOB_NAMES = {"refresh": "잔고 새로고침", "run": "매매 실행", "auto": "자동 매매 실행",
+             "rehearsal": "실계좌 리허설"}
+READ_ONLY_JOBS = ("refresh", "rehearsal")
 
 
 def session_day(now: datetime) -> str:
@@ -266,7 +270,7 @@ _job: dict = {"name": None, "started": None}
 def _run_job(name: str, notify_done: bool = True) -> str:
     """Run a job while holding _job_lock; returns "ok" or an error text."""
     _job.update(name=name, started=now_iso())
-    update_state(agent="trading" if name != "refresh" else "refreshing", job=name,
+    update_state(agent="trading" if name not in READ_ONLY_JOBS else "refreshing", job=name,
                  checked_at=_job["started"])
     log(f"{JOB_NAMES[name]} 시작")
     trades_before = count_lines(PAPER / "trades.jsonl")
@@ -276,7 +280,7 @@ def _run_job(name: str, notify_done: bool = True) -> str:
     except Exception as e:  # noqa: BLE001 - a failed run must not kill the agent
         result = f"error ({e})"
     log(f"{JOB_NAMES[name]} 종료: {result}")
-    if name != "refresh" and notify_done:
+    if name not in READ_ONLY_JOBS and notify_done:
         from quant import notify
         if notify.notify_run(name, result, PAPER, trades_before):
             log("휴대폰 알림 보냄")
@@ -341,7 +345,47 @@ def run_auto(now: datetime, attempt: int = 0) -> str:
             log("휴대폰 알림 보냄")
     update_state(last_day=day, last_run=now.isoformat(timespec="seconds"), last_result=result)
     send_preview(day)
+    if not read_state().get("retry"):
+        rehearse(day)
     return result
+
+
+# -- live-account rehearsal (never orders) ----------------------------------------
+REHEARSAL = PAPER / "rehearsal"
+
+
+def rehearsal_on(env: dict) -> bool:
+    """Run the nightly rehearsal when the live keys exist, unless .env REHEARSAL=0."""
+    keys = env.get("KIWOOM_LIVE_APP_KEY") and env.get("KIWOOM_LIVE_SECRET_KEY")
+    return bool(keys) and env.get("REHEARSAL", "1") != "0"
+
+
+def rehearse(day: str, force: bool = False) -> str | None:
+    """After the nightly mock run: read the real account with the live keys and
+    record what tonight's strategy would order there (paper/rehearsal/state.json).
+    Read-only twice over (a read-only broker and a --check run). Once per evening."""
+    from quant import notify
+    if not force and (not rehearsal_on(notify.read_env()) or read_state().get("rehearsal_day") == day):
+        return None
+    with _job_lock:
+        result = _run_job("rehearsal")
+    # The real account keeps the same planned orders night after night until live
+    # trading starts, so the phone hears about a plan only when it changes.
+    plan = rehearsal_plan(result, _read_json(REHEARSAL / "state.json"))
+    if plan != read_state().get("rehearsal_plan") and notify.notify_rehearsal(result, REHEARSAL):
+        log("리허설 결과 알림 보냄")
+    update_state(rehearsal_day=day, rehearsal_plan=plan)
+    return result
+
+
+def rehearsal_plan(result: str, state: dict) -> str:
+    """A short fingerprint of the rehearsal outcome: failure, blocking alerts and
+    which symbols it would buy or sell (not quantities, which move with prices)."""
+    if result != "ok":
+        return "failed"
+    errors = sorted(str(a.get("message", ""))[:30] for a in state.get("alerts") or [] if a.get("level") == "error")
+    orders = sorted(f"{o.get('side')}:{o.get('symbol')}" for o in state.get("planned_orders") or [])
+    return "|".join(errors + orders)
 
 
 def retry_due(now: datetime, retry: dict | None) -> int | None:
@@ -457,6 +501,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/pause":
             set_paused(bool(body.get("paused", True)))
             return self._json(200, control_state())
+        if path == "/api/rehearsal":  # live-account rehearsal: reads balances, never orders
+            if rehearse_now() is None:
+                return self._json(409, {"error": f"{JOB_NAMES.get(_job['name'], '다른 작업')} 중이에요. "
+                                                 "끝나면 다시 눌러주세요.", **readiness_report()})
+            return self._json(200, readiness_report())
         if path == "/api/live-key-check":  # read-only balance query, never an order
             from quant import notify, readiness
             readiness.check_live_keys(notify.read_env(), PAPER)
@@ -572,6 +621,16 @@ def check_missed(now: datetime, state: dict) -> list[str]:
     if changes:
         update_state(**changes)
     return days
+
+
+def rehearse_now() -> str | None:
+    """The rehearsal from the readiness button; None when another run holds the lock."""
+    if not _job_lock.acquire(blocking=False):
+        return None
+    try:
+        return _run_job("rehearsal")
+    finally:
+        _job_lock.release()
 
 
 def refresh_now() -> str | None:

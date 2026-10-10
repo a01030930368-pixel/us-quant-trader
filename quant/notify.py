@@ -209,6 +209,45 @@ def preview_message(preview: dict, paused: bool = False) -> str | None:
     return "\n\n".join(blocks)
 
 
+def rehearsal_message(result: str, state: dict) -> str | None:
+    """Live-account rehearsal: what tonight's run would have ordered on the real
+    account. None on quiet nights (no orders, nothing wrong)."""
+    problems = [] if result == "ok" else [f"리허설 실행에 실패했어요 ({result}). paper/logs/agent.log 를 확인해 주세요."]
+    problems += [a.get("message", "") for a in state.get("alerts") or []
+                 if a.get("level") in ("warn", "error")] if result == "ok" else []
+    orders = (state.get("planned_orders") or []) if result == "ok" else []
+    if not (orders or problems):
+        return None
+    blocks = ["🎭 실계좌 리허설 · 주문 없음"]
+    if problems:
+        blocks.append("⚠️ 실계좌였다면 확인이 필요했어요\n" + "\n".join(f"· {p}" for p in problems))
+    if orders:
+        lines = [f"{SIDE_ICON.get(o['side'], '·')} {SIDE.get(o['side'], o['side'])} {o['symbol']} {o['qty']}주 "
+                 f"(약 {_usd(float(o.get('value') or 0))})" for o in orders]
+        blocks.append("🛒 실계좌였다면 낼 주문\n" + "\n".join(lines))
+    if result == "ok" and state.get("cash") is not None:
+        held = sum(float(p.get("qty") or 0) * float(p.get("last_price") or 0) for p in state.get("positions") or [])
+        blocks.append(f"🏦 실계좌 달러 예수금 {_usd(float(state['cash']))}"
+                      + (f" · 보유 주식 {_usd(held)}" if held else ""))
+    blocks.append("💡 실계좌 잔고만 읽었어요. 실제 주문은 하나도 나가지 않았어요.")
+    return "\n\n".join(blocks)
+
+
+def notify_rehearsal(result: str, rehearsal_dir: Path, path: Path = ENV) -> bool:
+    """Send the rehearsal summary from paper/rehearsal/state.json. Never raises."""
+    try:
+        if not configured(path):
+            return False
+        try:
+            state = json.loads((rehearsal_dir / "state.json").read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            state = {}
+        text = rehearsal_message(result, state)
+        return send(text, path) if text else False
+    except Exception:  # noqa: BLE001 - a notification must never break the agent
+        return False
+
+
 def notify_preview(paper: Path, path: Path = ENV) -> bool:
     """Send the night-before heads-up from paper/state.json. Never raises."""
     try:

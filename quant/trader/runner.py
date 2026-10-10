@@ -436,6 +436,7 @@ class Runner:
             execute: bool = True) -> dict:
         now = (now or datetime.now(timezone.utc)).astimezone(KST)
         today = pd.Timestamp(now.date())
+        self.planned = None  # a --check run records the orders it would send
         meta = self._read("meta.json")
         alerts: list[dict] = []
 
@@ -496,6 +497,7 @@ class Runner:
             if blocked:
                 alerts.append({"level": "error", "message": blocked})
             elif not execute:
+                self.planned = orders
                 for o in orders:
                     alerts.append({"level": "info", "message":
                                    f"점검 모드 - {o['side']} {o['symbol']} {o['qty']}주 예정"})
@@ -622,6 +624,9 @@ class Runner:
             backtest = self._read("state.json").get("backtest")
         if backtest:
             state["backtest"] = backtest
+        if getattr(self, "planned", None) is not None:
+            state["planned_orders"] = [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in o.items()}
+                                       for o in self.planned]
         if preview is None:
             preview = self._read("state.json").get("preview")
         if preview:

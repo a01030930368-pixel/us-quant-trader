@@ -240,3 +240,21 @@ def _num(value) -> float:
         return float(text) if text else 0.0
     except ValueError:
         return 0.0
+
+
+class ReadOnlyBroker:
+    """Wraps a broker so it can read the account but never order.
+
+    Used by the live-account rehearsal: real balances, no real orders."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    def positions(self) -> dict[str, dict]:
+        return self.inner.positions()
+
+    def cash_usd(self) -> float:
+        return self.inner.cash_usd()
+
+    def place_order(self, *a, **kw) -> dict:
+        raise RuntimeError("리허설 중에는 주문을 내지 않습니다.")

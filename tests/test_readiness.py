@@ -21,6 +21,13 @@ def write(paper, days=25, model_drift=0.0, trades=()):
 AGENT = {"last_run": "2026-11-25T23:46:00+09:00", "last_result": "ok", "missed": [], "backup_day": "2026-11-26"}
 
 
+def rehearsal(paper, alerts=(), when="2026-11-25T23:50:00+09:00"):
+    (paper / "rehearsal").mkdir(parents=True, exist_ok=True)
+    (paper / "rehearsal" / "state.json").write_text(json.dumps({
+        "updated_at": when, "cash": 5000.0, "alerts": list(alerts),
+        "planned_orders": [{"side": "buy", "symbol": "QQQ", "qty": 3}]}), encoding="utf-8")
+
+
 def by_id(items):
     return {i["id"]: i for i in items}
 
@@ -28,9 +35,11 @@ def by_id(items):
 def test_all_ready(tmp_path):
     write(tmp_path)
     (tmp_path / readiness.KEY_CHECK).write_text(json.dumps({"ok": True, "time": "2026-11-26T09:00", "cash_usd": 1234.5}))
+    rehearsal(tmp_path)
     items = readiness.checklist(tmp_path, ENV, AGENT, date(2026, 11, 26), wake=True)
     assert {i["id"]: i["status"] for i in items} == dict.fromkeys(
-        ["days", "gap", "runs", "orders", "telegram", "limit", "loss", "keys", "api", "wake", "backup", "paused"], "ok")
+        ["days", "gap", "runs", "orders", "telegram", "limit", "loss", "keys", "api", "rehearsal", "wake",
+         "backup", "paused"], "ok")
     assert readiness.summary(items)["ready"]
     assert "$1,234.50" in by_id(items)["api"]["detail"]
 
@@ -50,6 +59,7 @@ def test_problems_are_flagged(tmp_path):
     assert items["api"]["status"] == "todo"
     assert items["paused"]["status"] == "warn"
     assert items["backup"]["status"] == "todo"
+    assert items["rehearsal"]["status"] == "todo"
     assert "wake" not in items                       # not on Windows: cannot tell
     assert not readiness.summary(list(items.values()))["ready"]
 
@@ -96,3 +106,13 @@ def test_telegram_check_command(tmp_path):
     text = telegram_bot.handle("/점검", act)
     assert text.startswith("🧾 실계좌 전환 점검표") and "⬜ 실계좌 연결 확인" in text and "점검만" in text
     assert "/check" in telegram_bot.help_text()
+
+
+def test_rehearsal_item(tmp_path):
+    rehearsal(tmp_path)
+    it = readiness.rehearsal_item(tmp_path, date(2026, 11, 26))
+    assert it["status"] == "ok" and "$5,000.00" in it["detail"] and "매수 QQQ 3주" in it["detail"]
+    assert readiness.rehearsal_item(tmp_path, date(2026, 12, 5))["status"] == "warn"       # stale
+    rehearsal(tmp_path, alerts=[{"level": "error", "message": "실계좌는 주문 한도(MAX_ORDER_USD)를 .env 에 정해야 주문합니다."}])
+    it = readiness.rehearsal_item(tmp_path, date(2026, 11, 26))
+    assert it["status"] == "warn" and "MAX_ORDER_USD" in it["detail"]
