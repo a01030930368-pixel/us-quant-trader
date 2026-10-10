@@ -631,3 +631,15 @@ def test_run_trader_rehearse_uses_live_keys_read_only(monkeypatch, tmp_path, clo
     state = json.loads((tmp_path / "paper" / "rehearsal" / "state.json").read_text(encoding="utf-8"))
     assert state["planned_orders"] and not (tmp_path / "paper" / "state.json").exists()
     assert brokers.ReadOnlyBroker is run_trader.ReadOnlyBroker
+
+
+def test_exchange_rate_is_recorded_for_won_view(tmp_path, close):
+    r = make_runner(tmp_path)
+    r.fx_source = lambda: 1388.5
+    s = r.run(close=close, now=datetime(2026, 10, 8, 14, tzinfo=timezone.utc))
+    assert s["fx"]["usdkrw"] == 1388.5
+    assert all(x["fx"] == 1388.5 for x in trades(r))
+    eq = [json.loads(x) for x in (r.dir / "equity.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert eq[-1]["usdkrw"] == 1388.5
+    r.fx_source = lambda: None                       # rate unavailable: keep the last one
+    assert r.run(close=close, now=datetime(2026, 10, 8, 14, tzinfo=timezone.utc))["fx"]["usdkrw"] == 1388.5

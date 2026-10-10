@@ -28,6 +28,19 @@ from quant.strategies import momentum_13612, momentum_blend, momentum_rotation, 
 
 KST = timezone(timedelta(hours=9))
 SAFE = "IEF"
+
+
+def fetch_usdkrw() -> float | None:
+    """The latest USD/KRW close from Yahoo ("KRW=X"), or None. Only for showing
+    balances and estimating tax in won; never used for trading decisions."""
+    try:
+        import yfinance as yf
+        raw = yf.download("KRW=X", period="10d", interval="1d", progress=False, auto_adjust=False)
+        col = raw["Close"].dropna()
+        val = float(col.iloc[-1, 0] if getattr(col, "ndim", 1) == 2 else col.iloc[-1])
+        return round(val, 2) if 500 < val < 5000 else None
+    except Exception:  # noqa: BLE001 - won display is optional
+        return None
 BENCHMARK = "SPY"
 
 
@@ -285,6 +298,10 @@ class Runner:
         self.notify = notify
         self.dir = Path(self.cfg.state_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
+        # USD/KRW for the won view and the tax estimate. Fetched only for real runs
+        # (tests pass prices in and may set this to a lambda).
+        self.fx_source = None
+        self.fx: float | None = None
 
     # -- files ----------------------------------------------------------------
     def _read(self, name: str) -> dict:
@@ -444,9 +461,12 @@ class Runner:
             alerts.append({"level": "error", "message": "STOP 파일이 있어 매매를 멈췄습니다."})
             return self._state(now, meta, alerts=alerts)
 
+        fx_source = self.fx_source
         if close is None:
             tickers = sorted(set(DATA_TICKERS) | set(self.cfg.canary))
             close = load_prices(tickers, "2009-01-01", use_cache=False).dropna()
+            fx_source = fx_source or fetch_usdkrw
+        self.fx = fx_source() if fx_source else None
         last = close.index[-1]
         prices = {t: float(close[t].iloc[-1]) for t in close.columns}
         age = (today - last.normalize()).days
@@ -518,6 +538,7 @@ class Runner:
                            "order_id": res.get("order_no"),
                            "sleeve": sleeve_of.get(o["symbol"]),
                            "note": "분할 리밸런싱" if self.cfg.staggered else "월간 리밸런싱",
+                           **({"fx": self.fx} if self.fx else {}),
                            "held_before": positions.get(o["symbol"], {}).get("qty", 0)}
                     if not ok:
                         rec["message"] = res.get("msg", "")
@@ -539,7 +560,8 @@ class Runner:
         equity = cash + sum(p["qty"] * prices.get(s, 0.0) for s, p in positions.items())
         self._equity_row({"date": str(last.date()), "equity": round(equity, 2),
                           "cash": round(cash, 2),
-                          "benchmark_close": round(prices.get(BENCHMARK, float("nan")), 4)})
+                          "benchmark_close": round(prices.get(BENCHMARK, float("nan")), 4),
+                          **({"usdkrw": self.fx} if self.fx else {})})
         self._write_atomic("meta.json", meta)
         preview = None
         try:
@@ -624,6 +646,10 @@ class Runner:
             backtest = self._read("state.json").get("backtest")
         if backtest:
             state["backtest"] = backtest
+        fx = {"usdkrw": self.fx, "as_of": now.isoformat(timespec="seconds")} if getattr(self, "fx", None) \
+            else self._read("state.json").get("fx")
+        if fx:
+            state["fx"] = fx
         if getattr(self, "planned", None) is not None:
             state["planned_orders"] = [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in o.items()}
                                        for o in self.planned]

@@ -21,7 +21,7 @@ ROOT = HERE.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from quant import market_calendar
+from quant import market_calendar, tax
 
 TEMPLATE = HERE / "template.html"
 SAMPLE_DIR = HERE / "sample"
@@ -98,6 +98,12 @@ def page(data_dir: Path | None, *, full_page: bool = True, extra: dict | None = 
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "market": market_calendar.upcoming(datetime.now().astimezone().date() - timedelta(days=7)),  # 미국장 시계용 휴장일
     }
+    try:  # 올해 양도세 추정 (환율 기록이 있을 때만)
+        st = data["state"]
+        data["tax"] = tax.estimate(data["trades"], st.get("positions") or [], datetime.now().astimezone().year,
+                                   (st.get("fx") or {}).get("usdkrw"))
+    except Exception as e:  # noqa: BLE001 - an estimate must never break the dashboard
+        print(f"[경고] 양도세 추정을 계산하지 못했습니다: {e}", file=sys.stderr)
     data.update(extra or {})
     return render(data, full_page=full_page)
 

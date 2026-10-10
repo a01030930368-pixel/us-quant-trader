@@ -167,6 +167,20 @@ body {
 }
 .kpi.hero .v { font-size: 30px; color: var(--hero); }
 .kpi.hero .v small { font-size: 18px; color: var(--sub); font-weight: 600; }
+.kpi .s.krw { color: var(--dim); }
+.kpi { position: relative; }
+.kpi .k .tax-chip { position: absolute; top: 12px; right: 12px; height: 22px; padding: 0 8px; font-size: 11.5px; }
+@media (max-width: 1500px) { .kpi .s.krw .fxr { display: none; } }
+.tax-grid { display: grid; gap: 6px; margin: 0 6px; }
+.tax-row { display: flex; justify-content: space-between; gap: 12px; background: var(--panel); border-radius: 10px; padding: 10px 14px; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.tax-row span { color: var(--sub); }
+.tax-row b { font-weight: 650; }
+.tax-row b .up { color: var(--up); }
+.tax-row b .down { color: var(--down); }
+.tax-row b small { color: var(--sub); font-weight: 500; }
+.tax-row.big { padding: 13px 14px; }
+.tax-row.big b { font-size: 17px; }
+.tax-sec { margin: 14px 6px 6px; font-size: 12.5px; color: var(--sub); font-weight: 600; }
 
 /* Segmented control */
 .seg { display: inline-flex; gap: 2px; padding: 3px; border-radius: 9px; background: var(--bg); }
@@ -574,6 +588,11 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     return (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
   }
   function usdSigned(v) { return v == null || isNaN(v) ? "—" : (v > 0 ? "+" : "") + usd(v); }
+  function won(v) { return v == null || isNaN(v) ? "—" : (v < 0 ? "-₩" : "₩") + Math.round(Math.abs(v)).toLocaleString("ko-KR"); }
+  function wonSigned(v) { return v == null || isNaN(v) ? "—" : (v > 0 ? "+" : "") + won(v); }
+  // 원/달러 환율: 실행기가 밤마다 기록한 값, 자동 실행기가 켜져 있으면 실시간 시세로 덮어씀
+  var TAX = DATA.tax || null;
+  var FX = { rate: (S.fx && +S.fx.usdkrw) || (TAX && +TAX.usdkrw) || null, live: false, as_of: S.fx && S.fx.as_of };
   function pct(v, dp, plain) {
     if (v == null || isNaN(v)) return "—";
     var s = (Math.abs(v) * 100).toFixed(dp == null ? 2 : dp) + "%";
@@ -693,9 +712,11 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     if (cents === 100) { whole += 1; cents = 0; }
     var excess = benchRet == null ? null : totalRet - benchRet;
     var kpis = [
-      '<div class="kpi hero"><span class="k">총 평가금액' + (LIVE.on ? '<span class="live-tag' + (LIVE.fresh ? " on" : "") + '" title="' + esc(LIVE.title) + '"><i></i>' + esc(LIVE.label) + "</span>" : "") + '</span><span class="v">$' + whole.toLocaleString("en-US") + "<small>." + String(cents).padStart(2, "0") + "</small></span>" +
-        '<span class="s">' + (dayAbs == null ? "원금 " + usd(initial, 0) : (LIVE.on ? "오늘 " : "전일 대비 ") + '<b class="' + tone(dayAbs) + '">' + usdSigned(dayAbs) + " (" + pct(dayRet) + ")</b>") + "</span></div>",
-      '<div class="kpi"><span class="k">누적 수익률</span><span class="v ' + tone(totalRet) + '">' + pct(totalRet) + '</span><span class="s">' + usdSigned(equity - initial) + ((S.started_at || EQ[0]) ? " · " + md(S.started_at || EQ[0].date) + "부터" : "") + "</span></div>",
+      '<div class="kpi hero"><span class="k">총 평가금액' + (TAX ? '<button type="button" class="ctl mini tax-chip" id="tax-open" title="올해 해외주식 양도소득세 추정">양도세</button>' : "") + (LIVE.on ? '<span class="live-tag' + (LIVE.fresh ? " on" : "") + '" title="' + esc(LIVE.title) + '"><i></i>' + esc(LIVE.label) + "</span>" : "") + '</span><span class="v">$' + whole.toLocaleString("en-US") + "<small>." + String(cents).padStart(2, "0") + "</small></span>" +
+        '<span class="s">' + (dayAbs == null ? "원금 " + usd(initial, 0) : (LIVE.on ? "오늘 " : "전일 대비 ") + '<b class="' + tone(dayAbs) + '">' + usdSigned(dayAbs) + " (" + pct(dayRet) + ")</b>") + "</span>" +
+        (FX.rate ? '<span class="s krw" title="' + esc(fxNote()) + '">≈ ' + won(equity * FX.rate) + '<span class="fxr"> · 환율 ' + FX.rate.toLocaleString("ko-KR", { maximumFractionDigits: 1 }) + "원</span></span>" : "") + "</div>",
+      '<div class="kpi"><span class="k">누적 수익률</span><span class="v ' + tone(totalRet) + '">' + pct(totalRet) + '</span><span class="s">' + usdSigned(equity - initial) + ((S.started_at || EQ[0]) ? " · " + md(S.started_at || EQ[0].date) + "부터" : "") + "</span>" +
+        (FX.rate ? '<span class="s krw">≈ ' + wonSigned((equity - initial) * FX.rate) + "</span>" : "") + "</div>",
       '<div class="kpi"><span class="k">' + esc(bench) + ' 대비</span><span class="v ' + tone(excess) + '">' + (excess == null ? "—" : pct(excess).replace("%", "%p")) + '</span><span class="s">' + esc(bench) + " 보유 시 " + pct(benchRet) + "</span></div>",
       '<div class="kpi"><span class="k">최대 낙폭</span><span class="v ' + (maxDD < 0 ? "down" : "flat") + '">' + pct(maxDD, 1) + '</span><span class="s">지금은 고점 대비 ' + pct(last ? last.dd : 0, 1) + "</span></div>",
       '<div class="kpi"><span class="k">다음 매매</span><span class="v">' + (dleft == null ? "—" : dleft > 0 ? "D-" + dleft : dleft === 0 ? "오늘" : "확인 필요") + '</span><span class="s">' + (nextDate ? md(nextDate) + " (" + wk(nextDate) + ")" : "일정 없음") + "</span></div>"
@@ -703,6 +724,44 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     $("kpis").innerHTML = kpis.join("");
   }
   renderKpis();
+  function fxNote() {
+    return FX.live ? "원/달러 실시간 환율 (야후 파이낸스)" : "원/달러 환율 · " + (FX.as_of ? FX.as_of.slice(0, 16).replace("T", " ") + " 실행 때 기록" : "마지막 실행 때 기록");
+  }
+
+  // ---- 올해 양도소득세 추정 (계산은 quant/tax.py, 화면은 보기만) ----
+  function openTax() {
+    var t = TAX, back = document.createElement("div");
+    var row = function (k, v, cls) { return '<div class="tax-row' + (cls ? " " + cls : "") + '"><span>' + k + "</span><b>" + v + "</b></div>"; };
+    var gainCls = function (v) { return v > 0 ? "up" : v < 0 ? "down" : ""; };
+    var body = '<div class="tax-grid">' +
+      row(t.year + "년 실현 손익 (판 것)", '<span class="' + gainCls(t.realized_krw) + '">' + wonSigned(t.realized_krw) + "</span>" + " <small>" + usdSigned(t.realized_usd) + " · 매도 " + t.sells + "건</small>") +
+      row("기본공제", "- " + won(t.deduction_krw) + (t.deduction_left_krw > 0 ? " <small>(남은 공제 " + won(t.deduction_left_krw) + ")</small>" : "")) +
+      row("과세표준", won(t.taxable_krw)) +
+      row("예상 세금 (22%)", won(t.tax_krw), "big") + "</div>" +
+      '<div class="tax-sec">지금 모두 판다면</div><div class="tax-grid">' +
+      row("보유 중인 평가손익", '<span class="' + gainCls(t.unrealized_krw) + '">' + wonSigned(t.unrealized_krw) + "</span>") +
+      row("올해 예상 세금 (실현 + 평가손익)", won(t.tax_if_sold_krw)) + "</div>" +
+      ((t.by_symbol || []).length ? '<div class="tax-sec">종목별 실현 손익</div><div class="tax-grid">' +
+        t.by_symbol.map(function (b) { return row(esc(b.symbol), '<span class="' + gainCls(b.gain_krw) + '">' + wonSigned(b.gain_krw) + "</span>"); }).join("") + "</div>" : "");
+    back.className = "modal-back";
+    back.innerHTML = '<div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="t-title" style="width:min(560px,100%)">' +
+      '<div class="m-head"><h3 id="t-title">올해 양도소득세 추정</h3><span class="sub">환율 ' + Number(t.usdkrw).toLocaleString("ko-KR") + "원 기준</span>" +
+      '<button type="button" class="ctl x" data-act="close">닫기</button></div>' +
+      '<div class="m-body">' + body + "</div>" +
+      '<div class="m-foot">해외주식은 1년 동안의 이익과 손실을 합쳐 250만 원을 뺀 금액에 22%(지방세 포함)를 내고, 다음 해 5월에 신고해요. ' +
+      "먼저 산 주식부터 판 것으로 계산하고 수수료는 비용으로 뺐어요" + (t.estimated_fx ? ", 환율이 기록되지 않은 매매는 지금 환율로 대신했어요" : "") + ". " +
+      (MODES[S.mode] && S.mode !== "kiwoom_live" ? "지금은 " + MODES[S.mode] + " 기록이라 실제로 낼 세금은 없어요. " : "") + "참고용 추정이에요.</div></div>";
+    document.body.appendChild(back);
+    var close = function () { back.remove(); document.removeEventListener("keydown", onKey); };
+    var onKey = function (e) { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    back.addEventListener("click", function (e) {
+      var act = e.target.closest && e.target.closest("[data-act]");
+      if (e.target === back || act) close();
+    });
+    back.querySelector('[data-act="close"]').focus();
+  }
+  $("kpis").addEventListener("click", function (e) { if (e.target.closest && e.target.closest("#tax-open")) openTax(); });
   $("legend-strat").textContent = strat.name || "전략";
   $("legend-bench").textContent = bench + " 보유";
   $("legend-model").hidden = modelRet == null;
@@ -1481,10 +1540,15 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     var pollIndices = function () {
       clearTimeout(ixTimer);
       if (document.hidden) { ixTimer = setTimeout(pollIndices, 15000); return; }
-      fetch("/api/quotes?symbols=" + encodeURIComponent(INDEX.map(function (i) { return i[0]; }).join(",")), { cache: "no-store" })
+      fetch("/api/quotes?symbols=" + encodeURIComponent(INDEX.map(function (i) { return i[0]; }).concat("KRW=X").join(",")), { cache: "no-store" })
         .then(function (r) { return r.json(); })
         .then(function (res) {
-          var q = res.quotes || {}, fresh = Object.keys(q).some(function (k) { return q[k].time && Date.now() - new Date(q[k].time).getTime() < 20 * 60 * 1000; });
+          var q = res.quotes || {}, fx = q["KRW=X"];
+          if (fx && fx.price > 500 && fx.price < 5000 && (!FX.live || fx.price !== FX.rate)) {
+            FX.rate = +fx.price; FX.live = true; renderKpis();
+          }
+          delete q["KRW=X"];
+          var fresh = Object.keys(q).some(function (k) { return q[k].time && Date.now() - new Date(q[k].time).getTime() < 20 * 60 * 1000; });
           paintIndices(q);
           // 장중 15초, 장 마감 뒤 10분, 못 받았으면 1분 뒤 다시
           ixTimer = setTimeout(pollIndices, !Object.keys(q).length ? 60000 : fresh ? 15000 : 10 * 60 * 1000);

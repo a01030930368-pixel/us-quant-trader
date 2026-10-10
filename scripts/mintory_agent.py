@@ -644,10 +644,11 @@ def refresh_now() -> str | None:
 
 
 def start_bot() -> None:
-    from quant import live, telegram_bot
+    from quant import live, tax, telegram_bot
     act = telegram_bot.Actions(
         state=lambda: _read_json(PAPER / "state.json"), agent=read_state, readiness=readiness_report,
         paused=lambda: STOP.exists(), set_paused=set_paused, refresh=refresh_now,
+        tax=lambda: tax.from_paper(PAPER),
         quotes=lambda syms: live.quotes(live.clean_symbols(",".join(syms))))
     threading.Thread(target=telegram_bot.serve, daemon=True, kwargs={
         "act": act, "get_offset": lambda: read_state().get("tg_offset"),
