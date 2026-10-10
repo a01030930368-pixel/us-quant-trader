@@ -257,3 +257,11 @@ def test_send_preview_once(tmp_path, monkeypatch):
     agent.send_preview("2026-10-14")
     agent.send_preview("2026-10-14")
     assert sent == [tmp_path] and agent.read_state()["preview_sent"] == "2026-10-15"
+
+
+def test_no_auto_run_on_us_holidays():
+    assert not agent.is_trading_evening("2026-11-26")                          # Thanksgiving
+    assert not agent.due_now(k(2026, 11, 26, 23, 50), "2026-11-25")
+    assert agent.next_run(k(2026, 11, 26, 9, 0), "2026-11-25") == k(2026, 11, 27, 23, 45)
+    assert agent.missed_days(k(2026, 11, 28, 10, 0), "2026-11-25") == ["2026-11-27"]
+    assert agent.preview_due("2026-11-25", {"order_date": "2026-11-27"}, None) == "2026-11-27"

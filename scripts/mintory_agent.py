@@ -77,7 +77,9 @@ def session_day(now: datetime) -> str:
 
 
 def is_trading_evening(day: str) -> bool:
-    return datetime.fromisoformat(day).weekday() < 5  # Mon-Fri KST = US Mon-Fri
+    """The KST evening of `day` holds a US session (same date: Mon-Fri, not an NYSE holiday)."""
+    from quant.market_calendar import is_trading_day
+    return is_trading_day(date.fromisoformat(day))
 
 
 def due_now(now: datetime, last_day: str | None) -> bool:
@@ -187,11 +189,10 @@ def make_backup(day: str) -> None:
 
 
 def preview_due(day: str, preview: dict | None, sent: str | None) -> str | None:
-    """The order date to warn about when the rebalance is the next weekday after `day`."""
+    """The order date to warn about when the rebalance is the next trading day after `day`."""
+    from quant.market_calendar import next_trading_day
     order = (preview or {}).get("order_date")
-    nxt = date.fromisoformat(day) + timedelta(days=1)
-    while nxt.weekday() >= 5:
-        nxt += timedelta(days=1)
+    nxt = next_trading_day(date.fromisoformat(day))
     return order if order == nxt.isoformat() and order != sent else None
 
 

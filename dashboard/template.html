@@ -440,7 +440,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       <h1 id="strategy-name">모의투자 대시보드</h1>
     </div>
     <div class="indices" id="indices" hidden></div>
-    <div class="mclock" id="mclock" title="미국 공휴일은 반영하지 않아요"></div>
+    <div class="mclock" id="mclock" title="미국 휴장일·조기 폐장일 반영 (특별 휴장은 제외)"></div>
     <div class="top-right" id="badges"></div>
     <div class="controls" id="controls" hidden>
       <button type="button" class="ctl" id="btn-refresh" title="키움 모의계좌 잔고를 다시 읽어요. 주문은 내지 않아요.">
@@ -1402,12 +1402,19 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   // ---- 미국장 시계: 정규장 09:30~16:00 (뉴욕), 한국시간으로 개장·마감까지 남은 시간 ----
   (function marketClock() {
     var el = $("mclock");
+    var MK = META.market || {}, HOL = MK.holidays || [], EARLY = MK.early_closes || [];
     var ny = function (d) {
       var p = {};
-      new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+      new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
         .formatToParts(d).forEach(function (x) { p[x.type] = x.value; });
-      return { wd: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(p.weekday), mins: +p.hour * 60 + +p.minute };
+      return { y: +p.year, m: +p.month, d: +p.day, wd: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(p.weekday), mins: +p.hour * 60 + +p.minute };
     };
+    // 뉴욕 날짜 + k일 -> {iso, wd}
+    var dayAt = function (t, k) {
+      var u = new Date(Date.UTC(t.y, t.m - 1, t.d + k));
+      return { iso: u.toISOString().slice(0, 10), wd: u.getUTCDay() };
+    };
+    var trading = function (x) { return x.wd >= 1 && x.wd <= 5 && HOL.indexOf(x.iso) < 0; };
     var kst = function (d, withDay) {
       var o = { timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
       if (withDay) o.weekday = "short";
@@ -1417,24 +1424,26 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       var d = Math.floor(m / 1440), h = Math.floor(m % 1440 / 60), mm = m % 60;
       return d ? d + "일" + (h ? " " + h + "시간" : "") : h ? h + "시간 " + mm + "분" : mm + "분";
     };
-    var OPEN = 570, CLOSE = 960;
+    var OPEN = 570;
     var paint = function () {
-      var now = new Date(), t = ny(now), weekday = t.wd >= 1 && t.wd <= 5;
+      var now = new Date(), t = ny(now), today = dayAt(t, 0), isDay = trading(today);
+      var CLOSE = EARLY.indexOf(today.iso) >= 0 ? 780 : 960;  // 조기 폐장일은 13:00
       var untilOpen;  // minutes to the next regular open
-      if (weekday && t.mins < OPEN) untilOpen = OPEN - t.mins;
+      if (isDay && t.mins < OPEN) untilOpen = OPEN - t.mins;
       else {
-        var ahead = 1, wd = (t.wd + 1) % 7;
-        while (wd === 0 || wd === 6) { ahead++; wd = (wd + 1) % 7; }
-        untilOpen = ahead * 1440 - t.mins + OPEN;
+        var k = 1;
+        while (!trading(dayAt(t, k)) && k < 10) k++;
+        untilOpen = k * 1440 - t.mins + OPEN;
       }
       var openAt = new Date(now.getTime() + untilOpen * 60000), html, cls = "mclock";
-      if (weekday && t.mins >= OPEN && t.mins < CLOSE) {
+      if (isDay && t.mins >= OPEN && t.mins < CLOSE) {
         var closeAt = new Date(now.getTime() + (CLOSE - t.mins) * 60000);
         cls += " open";
-        html = '<span class="n"><i></i>미국장 · 정규장</span><span class="v">마감까지 ' + span(CLOSE - t.mins) + "<small>한국 " + kst(closeAt) + " 마감</small></span>" +
+        html = '<span class="n"><i></i>미국장 · ' + (CLOSE < 960 ? "정규장 (오늘 조기 폐장)" : "정규장") + '</span><span class="v">마감까지 ' + span(CLOSE - t.mins) + "<small>한국 " + kst(closeAt) + " 마감</small></span>" +
           '<div class="bar"><span style="width:' + ((t.mins - OPEN) / (CLOSE - OPEN) * 100).toFixed(1) + '%"></span></div>';
       } else {
-        var phase = !weekday ? "주말 휴장" : t.mins >= 240 && t.mins < OPEN ? "프리마켓" : t.mins >= CLOSE && t.mins < 1200 ? "애프터마켓" : "장 마감";
+        var weekend = today.wd === 0 || today.wd === 6;
+        var phase = weekend ? "주말 휴장" : !isDay ? "휴장일" : t.mins >= 240 && t.mins < OPEN ? "프리마켓" : t.mins >= CLOSE && t.mins < 1200 ? "애프터마켓" : "장 마감";
         if (phase === "프리마켓" || phase === "애프터마켓") cls += " ext";
         html = '<span class="n"><i></i>미국장 · ' + phase + '</span><span class="v">개장까지 ' + span(untilOpen) + "<small>한국 " + kst(openAt, untilOpen >= 1440) + " 개장</small></span>";
       }

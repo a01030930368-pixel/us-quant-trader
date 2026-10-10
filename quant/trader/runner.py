@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from quant import market_calendar as mc
 from quant.data import load_prices
 from quant.strategies import momentum_13612, momentum_blend, momentum_rotation, tranched
 
@@ -136,7 +137,7 @@ def _completed(close: pd.DataFrame, today: pd.Timestamp) -> pd.DataFrame:
     last row would look like a month end every day, so tranche 0 would
     re-decide daily."""
     px = close[close.index < today.normalize()]
-    nxt = px.index[-1] + pd.offsets.BDay(1)
+    nxt = px.index[-1] + mc.bday()
     if nxt.to_period("M") == px.index[-1].to_period("M"):
         px = pd.concat([px, px.iloc[[-1]].set_axis([nxt])])
     return px
@@ -222,18 +223,18 @@ def signal_scores(close: pd.DataFrame, sig: pd.Timestamp, cfg: TraderConfig,
 
 
 def next_rebalance(today: pd.Timestamp, cfg: TraderConfig | None = None) -> dict:
-    """Approximate: last weekday of this month, then the next weekday
-    (US holidays are not modelled). With tranches, the next of month end,
-    +spacing, +2*spacing, ... weekdays after it."""
-    month_end = today + pd.offsets.BMonthEnd(0)
+    """Last US trading day of this month, then the next trading day (NYSE
+    holidays included, see quant.market_calendar). With tranches, the next of
+    month end, +spacing, +2*spacing, ... trading days after it."""
+    month_end = today + mc.bmonth_end() * 0
     if cfg is not None and cfg.tranches > 1:
-        prev_end = today - pd.offsets.BMonthEnd(1)
-        days = [end + pd.offsets.BDay(k * cfg.tranche_spacing)
+        prev_end = today - mc.bmonth_end()
+        days = [end + mc.bday() * (k * cfg.tranche_spacing)
                 for end in (prev_end, month_end) for k in range(cfg.tranches)]
         # the next tranche whose order day (signal day + 1) is today or later
-        month_end = min(d for d in days if d + pd.offsets.BDay(1) >= today.normalize())
+        month_end = min(d for d in days if d + mc.bday() >= today.normalize())
     return {"signal_date": str(month_end.date()),
-            "order_date": str((month_end + pd.offsets.BDay(1)).date())}
+            "order_date": str((month_end + mc.bday()).date())}
 
 
 def preview_rebalance(close: pd.DataFrame, today: pd.Timestamp, cfg: TraderConfig,
@@ -243,11 +244,11 @@ def preview_rebalance(close: pd.DataFrame, today: pd.Timestamp, cfg: TraderConfi
     dropped and the last close is carried forward to the signal day."""
     nxt = next_rebalance(today, cfg)
     if nxt["order_date"] <= str(today.date()):  # today's trade is the run itself; show the one after
-        nxt = next_rebalance(today + pd.offsets.BDay(1), cfg)
+        nxt = next_rebalance(today + mc.bday(), cfg)
     sig = pd.Timestamp(nxt["signal_date"])
     px = close[close.index < today.normalize()]
     if sig > px.index[-1]:
-        future = pd.bdate_range(px.index[-1] + pd.offsets.BDay(1), sig)
+        future = pd.date_range(px.index[-1] + mc.bday(), sig, freq=mc.bday())
         px = pd.concat([px, pd.DataFrame([px.iloc[-1].values] * len(future), index=future, columns=px.columns)])
     w = model_weights(px.loc[:sig], cfg).loc[sig] / (1 - cfg.cash_buffer)
     weights = {t: round(float(v), 4) for t, v in w.items() if v > 1e-9}
