@@ -191,3 +191,27 @@ def test_wake_task_xml_is_valid():
     assert root.find("t:Settings/t:WakeToRun", ns).text == "true"
     assert root.find("t:Actions/t:Exec/t:Command", ns).text == r"C:\Py & Co\pythonw.exe"
     assert "T23:40:00+09:00" in root.find("t:Triggers/t:CalendarTrigger/t:StartBoundary", ns).text
+
+
+def test_weekly_due():
+    assert agent.weekly_due(k(2026, 10, 17, 6, 59), None) is None            # Sat before 7
+    assert agent.weekly_due(k(2026, 10, 17, 7, 0), None) == "2026-10-16"
+    assert agent.weekly_due(k(2026, 10, 18, 22, 0), None) == "2026-10-16"    # Sunday catch-up
+    assert agent.weekly_due(k(2026, 10, 18, 22, 0), "2026-10-16") is None    # already sent
+    assert agent.weekly_due(k(2026, 10, 19, 9, 0), None) is None             # Monday
+
+
+def test_send_weekly_refreshes_then_sends_once(tmp_path, monkeypatch):
+    from quant import notify
+    monkeypatch.setattr(agent, "STATE", tmp_path / "agent.json")
+    monkeypatch.setattr(agent, "LOG", tmp_path / "agent.log")
+    monkeypatch.setattr(agent, "PAPER", tmp_path)
+    order = []
+    monkeypatch.setattr(agent, "run_trader", lambda args: order.append(args) or 0)
+    monkeypatch.setattr(notify, "configured", lambda *a: True)
+    monkeypatch.setattr(notify, "settings", lambda *a: {"weekly": True, "daily": True})
+    monkeypatch.setattr(notify, "notify_weekly", lambda week, paper: order.append(week) or True)
+    monkeypatch.setattr(notify, "notify_run", lambda *a, **kw: False)
+    agent.send_weekly("2026-10-16")
+    assert order == [agent.JOBS["refresh"], "2026-10-16"]
+    assert agent.read_state()["weekly_sent"] == "2026-10-16"

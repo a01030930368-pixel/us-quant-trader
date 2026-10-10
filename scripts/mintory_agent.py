@@ -16,6 +16,8 @@ Mintory 화면의 버튼(잔고 새로고침, 지금 매매 실행, 일시정지
 - 화면은 http://127.0.0.1:47321 에서 보여준다. 이 주소는 이 PC 안에서만 열린다.
   같은 포트가 "이미 켜져 있음" 표시도 겸해서, 한 번에 하나만 돈다.
 - 일시정지는 paper/STOP 파일을 만들고 지우는 것과 같다(실행기가 STOP이 있으면 주문을 안 냄).
+- 토요일 아침 7시(금요일 미국장 마감 뒤)에 잔고를 새로 불러와 주간 리포트를 텔레그램으로 보낸다.
+  그때 PC가 꺼져 있었으면 주말 중 켜질 때 보낸다. .env 에 NOTIFY_WEEKLY=0 이면 끈다.
 - 텔레그램이 연결돼 있으면 휴대폰 명령(/balance, /refresh, /status, /pause, /resume)에 답한다
   (quant/telegram_bot.py). 주문을 내는 명령은 없다.
 - 상태는 paper/agent.json, 로그는 paper/logs/agent.log.
@@ -145,6 +147,19 @@ def missed_message(days: list[str], next_iso: str | None) -> str:
             "그 시각에 PC가 꺼져 있었거나 잠자기 상태였어요.\n\n"
             f"🔁 밀린 주문은 다음 자동 실행{nxt} 때 알아서 맞춰집니다.\n"
             "💡 그 시각에 PC를 켜 두세요.")
+
+
+WEEKLY_AT = 7  # KST hour on Saturday; Friday's US session has closed by then
+
+
+def weekly_due(now: datetime, last_week: str | None) -> str | None:
+    """The Friday whose weekly report is due (Saturday 07:00 KST through Sunday), else None."""
+    now = now.astimezone(KST)
+    wd = now.weekday()
+    if not ((wd == 5 and now.hour >= WEEKLY_AT) or wd == 6):
+        return None
+    friday = (now - timedelta(days=wd - 4)).date().isoformat()
+    return friday if friday != last_week else None
 
 
 def now_iso() -> str:
@@ -388,11 +403,26 @@ def loop(restarted: bool = False) -> None:
             update_state(last_day=session_day(now), last_run=now.isoformat(timespec="seconds"),
                          last_result=result)
             state = read_state()
+        week = weekly_due(now, state.get("weekly_sent"))
+        if week:
+            send_weekly(week)
+            state = read_state()
         update_state(agent="running" if not _job["name"] else read_state().get("agent"),
                      checked_at=now_iso(),
                      next_run=next_run(datetime.now(KST), state.get("last_day"))
                      .isoformat(timespec="minutes"))
         time.sleep(60)
+
+
+def send_weekly(week: str) -> None:
+    """Refresh the balance at Friday's close, then send the weekly report (once per week)."""
+    from quant import notify
+    if notify.configured() and notify.settings()["weekly"]:
+        with _job_lock:
+            _run_job("refresh")
+        if notify.notify_weekly(week, PAPER):
+            log(f"주간 리포트 보냄 ({week} 주)")
+    update_state(weekly_sent=week)
 
 
 def check_missed(now: datetime, state: dict) -> list[str]:
