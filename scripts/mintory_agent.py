@@ -560,6 +560,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/pause":
             set_paused(bool(body.get("paused", True)))
             return self._json(200, control_state())
+        if path == "/api/withdraw":  # sets money aside for a withdrawal; the nightly run sells
+            code, out = withdraw_api(body)
+            return self._json(code, out)
         if path == "/api/rehearsal":  # live-account rehearsal: reads balances, never orders
             if rehearse_now() is None:
                 return self._json(409, {"error": f"{JOB_NAMES.get(_job['name'], '다른 작업')} 중이에요. "
@@ -573,10 +576,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def readiness_report() -> dict:
-    from quant import notify, readiness
+    from quant import notify, readiness, withdraw
     items = readiness.checklist(PAPER, notify.read_env(), read_state(),
                                 wake=readiness.wake_task_registered(WAKE_TASK))
-    return {"items": items, "summary": readiness.summary(items)}
+    flows = {"paper": withdraw.flows(PAPER)[:60], "live": withdraw.flows(PAPER / "rehearsal")[:60]}
+    return {"items": items, "summary": readiness.summary(items), "flows": flows}
 
 
 def start_server(wait: float = 0) -> Server | None:
@@ -697,6 +701,44 @@ def rehearse_now() -> str | None:
         _job_lock.release()
 
 
+def read_jsonl(path: Path) -> list[dict]:
+    from quant import notify
+    return notify.read_jsonl(path)
+
+
+def withdraw_command(arg: str) -> str:
+    """Telegram /withdraw: no argument = status, '취소' = cancel, an amount = request."""
+    from quant import withdraw
+    arg = (arg or "").strip()
+    state = _read_json(PAPER / "state.json")
+    if not arg:
+        return withdraw.status_text(withdraw.current(PAPER), state)
+    if arg in ("취소", "cancel", "0"):
+        return "🗑 출금 준비를 취소했어요. 빼 둔 현금은 다음 실행 때 다시 투자해요." if withdraw.cancel(PAPER) \
+            else "🏧 취소할 출금 준비가 없어요."
+    try:
+        req = withdraw.request(PAPER, arg, source="telegram")
+    except ValueError as e:
+        return f"🏧 {e}"
+    log(f"출금 준비 요청 ${req['amount_usd']:,.2f} (텔레그램)")
+    return withdraw.request_text(req)
+
+
+def withdraw_api(body: dict) -> tuple[int, dict]:
+    """POST /api/withdraw {amount: "300만"} or {cancel: true}."""
+    from quant import withdraw
+    if body.get("cancel"):
+        withdraw.cancel(PAPER)
+        log("출금 준비 취소 (화면)")
+        return 200, {"withdraw": None}
+    try:
+        req = withdraw.request(PAPER, str(body.get("amount") or ""), source="app")
+    except ValueError as e:
+        return 400, {"error": str(e)}
+    log(f"출금 준비 요청 ${req['amount_usd']:,.2f} (화면)")
+    return 200, {"withdraw": req, "message": withdraw.request_text(req)}
+
+
 def refresh_now() -> str | None:
     """Balance check for the phone; None when another run holds the lock."""
     if not _job_lock.acquire(blocking=False):
@@ -712,7 +754,8 @@ def start_bot() -> None:
     act = telegram_bot.Actions(
         state=lambda: _read_json(PAPER / "state.json"), agent=read_state, readiness=readiness_report,
         paused=lambda: STOP.exists(), set_paused=set_paused, refresh=refresh_now,
-        tax=lambda: tax.from_paper(PAPER),
+        tax=lambda: tax.from_paper(PAPER), withdraw=withdraw_command,
+        equity=lambda: read_jsonl(PAPER / "equity.jsonl"),
         quotes=lambda syms: live.quotes(live.clean_symbols(",".join(syms))))
     threading.Thread(target=telegram_bot.serve, daemon=True, kwargs={
         "act": act, "get_offset": lambda: read_state().get("tg_offset"),

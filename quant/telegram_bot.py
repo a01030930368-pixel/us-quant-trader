@@ -10,6 +10,7 @@
     /next     다음        다음 리밸런싱 날짜와 예상 주문
     /check    점검        실계좌 전환 점검표
     /tax      세금        올해 양도소득세 추정 (원화)
+    /withdraw 출금        수익 일부 출금 준비 (/withdraw 300만, /withdraw 취소)
     /pause    일시정지    자동 매매가 주문을 내지 않게 멈춤
     /resume   재개        다시 주문
     /help     도움말 (/? 나 ? 도 됨)
@@ -23,7 +24,7 @@ from datetime import datetime
 
 import requests
 
-from quant import notify
+from quant import notify, performance
 
 COMMANDS = [
     ("balance", "잔고", "보유 종목과 평가금액"),
@@ -32,13 +33,14 @@ COMMANDS = [
     ("next", "다음", "다음 리밸런싱 예상 주문"),
     ("check", "점검", "실계좌 전환 점검표"),
     ("tax", "세금", "올해 양도소득세 추정 (원화)"),
+    ("withdraw", "출금", "출금할 돈 현금으로 빼 두기 (예: /withdraw 300만)"),
     ("pause", "일시정지", "자동 매매 주문 멈추기"),
     ("resume", "재개", "자동 매매 주문 다시 하기"),
     ("help", "도움말", "명령 목록"),
 ]
-ICONS = {"balance": "💰", "refresh": "🔄", "status": "📋", "next": "📣", "check": "🧾", "tax": "🧮", "pause": "⏸", "resume": "▶️", "help": "❓"}
+ICONS = {"balance": "💰", "refresh": "🔄", "status": "📋", "next": "📣", "check": "🧾", "tax": "🧮", "withdraw": "🏧", "pause": "⏸", "resume": "▶️", "help": "❓"}
 ALIASES = {ko: en for en, ko, _ in COMMANDS} | {
-    "start": "help", "?": "help", "양도세": "tax", "환율": "tax", "？": "help", "명령": "help", "명령어": "help", "도움": "help", "정지": "pause", "멈춰": "pause", "다시시작": "resume",
+    "start": "help", "?": "help", "양도세": "tax", "환율": "tax", "출금준비": "withdraw", "인출": "withdraw", "？": "help", "명령": "help", "명령어": "help", "도움": "help", "정지": "pause", "멈춰": "pause", "다시시작": "resume",
 }
 MAX_AGE = 600  # seconds; older messages (sent while the PC was off) are ignored
 WEEKDAY_KO = "월화수목금토일"
@@ -55,6 +57,8 @@ class Actions:
     quotes: Callable[[list[str]], dict] | None = None
     readiness: Callable[[], dict] | None = None
     tax: Callable[[], dict | None] | None = None
+    equity: Callable[[], list[dict]] | None = None   # paper/equity.jsonl rows
+    withdraw: Callable[[str], str] | None = None     # "/withdraw <arg>" -> reply text
 
 
 def command(text: str) -> str | None:
@@ -107,7 +111,8 @@ def _when(iso: str | None) -> str:
     return f"{t.month}/{t.day}({WEEKDAY_KO[t.weekday()]}) {t:%H:%M}"
 
 
-def balance_text(state: dict, quotes: dict | None = None, paused: bool = False) -> str:
+def balance_text(state: dict, quotes: dict | None = None, paused: bool = False,
+                 equity: list[dict] | None = None) -> str:
     if not state:
         return "💰 아직 잔고 기록이 없어요.\n\nMintory에서 잔고 새로고침을 한 번 눌러 주세요."
     q = (quotes or {}).get("quotes") or {}
@@ -135,8 +140,12 @@ def balance_text(state: dict, quotes: dict | None = None, paused: bool = False) 
     if fx:
         head.append(f"🇰🇷 약 {_won(total * fx)} (환율 {fx:,.1f}원)")
     initial = float(state.get("initial_capital") or 0)
-    if initial:
-        head.append(f"📊 누적 {(total / initial - 1) * 100:+.2f}%")
+    ret = performance.total_return(equity, initial, total) if equity else (total / initial - 1 if initial else None)
+    if ret is not None:
+        head.append(f"📊 누적 {ret * 100:+.2f}%")
+    principal = float(state.get("principal") or initial or 0)
+    if principal and abs(principal - initial) >= 0.01:   # money was added or taken out
+        head.append(f"🏦 원금 {_usd(principal)} · 번 돈 {'+' if total >= principal else '-'}{_usd(abs(total - principal))}")
     hold = ["📦 보유 종목"] + [r for _, r in sorted(rows, reverse=True)]
     hold.append(f"· 현금 · {_usd(float(state.get('cash') or 0))}")
     blocks = [f"💰 Mintory 잔고\n🕒 {basis} 기준", "\n".join(head), "\n".join(hold)]
@@ -208,7 +217,7 @@ def handle(text: str, act: Actions) -> str:
         state = act.state()
         syms = [p["symbol"] for p in state.get("positions") or [] if p.get("symbol")]
         quotes = act.quotes(syms) if act.quotes and syms else None
-        return balance_text(state, quotes, act.paused())
+        return balance_text(state, quotes, act.paused(), act.equity() if act.equity else None)
     if cmd == "refresh":
         result = act.refresh()
         if result is None:
@@ -216,7 +225,7 @@ def handle(text: str, act: Actions) -> str:
         reason = ((act.agent() or {}).get("last_job") or {}).get("reason") or ""
         head = "" if result == "ok" else ("⚠️ 잔고를 불러오지 못했어요" + (f"\n{reason}" if reason else "")
                                           + "\n\n마지막 기록을 보여 드려요.\n\n")
-        return head + balance_text(act.state(), None, act.paused())
+        return head + balance_text(act.state(), None, act.paused(), act.equity() if act.equity else None)
     if cmd == "next":
         return next_text(act.state(), act.paused())
     if cmd == "check":
@@ -225,6 +234,11 @@ def handle(text: str, act: Actions) -> str:
         return readiness_text(act.readiness())
     if cmd == "tax":
         return tax_text(act.tax() if act.tax else None, act.state().get("mode"))
+    if cmd == "withdraw":
+        if not act.withdraw:
+            return "🏧 지금은 출금 준비를 할 수 없어요."
+        parts = (text or "").strip().split(maxsplit=1)
+        return act.withdraw(parts[1] if len(parts) > 1 else "")
     if cmd == "status":
         return status_text(act.state(), act.agent(), act.paused())
     if cmd == "pause":

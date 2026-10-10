@@ -377,3 +377,20 @@ def test_rehearsal_runs_after_the_nightly_run_and_reports_changes_only(tmp_path,
     env.clear()
     assert not agent.rehearsal_on(env)                              # no live keys: never runs
     assert "--rehearsal" in agent.JOBS["rehearsal"] and "--check" in agent.JOBS["rehearsal"]
+
+
+def test_withdraw_api_and_command(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "PAPER", tmp_path)
+    monkeypatch.setattr(agent, "LOG", tmp_path / "agent.log")
+    (tmp_path / "state.json").write_text(json.dumps({"cash": 5000.0, "fx": {"usdkrw": 1500.0}, "positions": []}))
+    code, out = agent.withdraw_api({"amount": "150만"})
+    assert code == 200 and out["withdraw"]["amount_usd"] == 1000.0 and "출금 준비를 요청했어요" in out["message"]
+    assert agent.withdraw_api({"amount": "$99999"})[0] == 400
+    assert "$1,000.00" in agent.withdraw_command("")
+    assert "취소했어요" in agent.withdraw_command("취소")
+    assert agent.withdraw_api({"cancel": True}) == (200, {"withdraw": None})
+    assert "요청했어요" in agent.withdraw_command("$500")
+    (tmp_path / "flows.jsonl").write_text(json.dumps({"time": "2026-10-12T23:50", "amount": 500.0}) + "\n")
+    monkeypatch.setattr(agent, "read_state", dict)
+    rep = agent.readiness_report()
+    assert rep["flows"]["paper"][0]["amount"] == 500.0 and rep["flows"]["live"] == []

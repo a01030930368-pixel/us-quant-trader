@@ -74,6 +74,8 @@
 | `alerts` | | `level`: `info` · `warn` · `error` |
 | `backtest` | | 같은 전략의 백테스트 비교. `{from, cost_bps, series: {날짜: 평가금액}}`. `from`(첫 기록일)의 실제 평가금액에서 시작해, 전날 장 마감 목표 비중으로 다음 날 수익을 받고 회전율×`cost_bps`를 뺀 값. 날짜는 `equity.jsonl`과 같음 |
 | `preview` | | 다음 리밸런싱 미리보기. `{signal_date, order_date, as_of, weights: {종목: 비중}, orders: [{symbol, side, qty, ref_price, value}]}`. `as_of`(마지막 장 마감) 가격이 신호일까지 그대로라고 가정한 예상치. 오늘이 주문일이면 그다음 리밸런싱 |
+| `principal`, `flows` | | 원금(시작 원금 + 입금 − 출금)과 `{deposits, withdrawals}` 합계(달러) |
+| `withdraw` | | 출금 준비 요청이 있을 때만. `withdraw.json` 내용 + `ready`(현금으로 빼 뒀는지), `paused` |
 | `fx` | | 원/달러 환율 `{usdkrw, as_of}`. 실행 때 야후(`KRW=X`)에서 받은 값. 원화 표시와 양도세 추정용이고 매매 판단에는 쓰지 않음. 못 받은 날은 이전 값 유지 |
 | `planned_orders` | | 점검(`--check`) 실행에서만. 리밸런싱 날이면 낼 주문 `[{symbol, side, qty, ref_price, value}]`. 실계좌 리허설(`paper/rehearsal/state.json`)이 이걸로 예정 주문을 보여 줌 |
 
@@ -98,6 +100,19 @@
 - `equity` = 현금 + 보유 종목 평가금액 (그날 종가 기준)
 - `benchmark_close`는 `state.benchmark`(SPY)의 그날 종가. 대시보드가 첫날 대비로 바꿔 비교합니다.
 - `usdkrw`(있으면)는 그날 원/달러 환율.
+- `flow`(있으면)는 그날 들어온(+) 또는 나간(−) 돈(달러). 수익률 계산에서 빼요: 하루 수익률 = (평가금액 − flow) / 전날 평가금액 − 1.
+
+## flows.jsonl (한 줄 = 입금·출금 하나)
+
+```json
+{"time": "2026-11-12T23:47:10+09:00", "date": "2026-11-12", "amount": 3000.0, "kind": "deposit", "cash_after": 3122.6, "fx": 1381.2}
+```
+
+- 실행기가 잔고로 알아챈 입금(`deposit`, +)·출금(`withdraw`, −). 지난 실행 때 본 현금·수량(`meta.json`의 `seen`)과 비교해, 매매로 설명되지 않는 현금 변화가 $100(또는 평가금액의 0.5%)보다 크면 기록해요. 체결 대기 중인 주문이 있으면 건너뜀.
+
+## withdraw.json (출금 준비 요청, 있을 때만)
+
+`{amount_usd, amount_krw, fx, left_usd, source, requested_at, ready_notified}`. 대시보드 입출금 창(`POST /api/withdraw`)이나 텔레그램 `/withdraw`가 만들고, 실행기는 `left_usd`만큼 현금을 남기도록 매도해요. 출금이 감지되면 `left_usd`를 줄이고 다 빠지면 파일을 지워요.
 
 ## agent.json (선택)
 

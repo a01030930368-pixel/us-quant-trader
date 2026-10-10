@@ -171,7 +171,14 @@ body {
 .kpi.hero .v small { font-size: 18px; color: var(--sub); font-weight: 600; }
 .kpi .s.krw { color: var(--dim); }
 .kpi { position: relative; }
-.kpi .k .tax-chip { position: absolute; top: 12px; right: 12px; height: 22px; padding: 0 8px; font-size: 11.5px; }
+.kpi .k .chips { position: absolute; top: 12px; right: 12px; display: flex; gap: 4px; }
+.kpi .k .chips .ctl { height: 22px; padding: 0 8px; font-size: 11.5px; }
+.money-form { display: flex; gap: 8px; margin: 0 6px; }
+.money-form input { flex: 1; min-width: 0; height: 36px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); padding: 0 12px; font: inherit; font-size: 14px; }
+.money-note { margin: 8px 6px 0; color: var(--sub); font-size: 12.5px; line-height: 1.6; white-space: pre-line; }
+.flow-row { display: grid; grid-template-columns: 130px 50px 1fr; white-space: nowrap; gap: 10px; background: var(--panel); border-radius: 10px; padding: 9px 14px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.flow-row b { text-align: right; font-weight: 650; }
+.flow-row span { color: var(--sub); }
 @media (max-width: 1500px) { .kpi .s.krw .fxr { display: none; } }
 .tax-grid { display: grid; gap: 6px; margin: 0 6px; }
 .tax-row { display: flex; justify-content: space-between; gap: 12px; background: var(--panel); border-radius: 10px; padding: 10px 14px; font-size: 13.5px; font-variant-numeric: tabular-nums; }
@@ -628,6 +635,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   function wonSigned(v) { return v == null || isNaN(v) ? "—" : (v > 0 ? "+" : "") + won(v); }
   // 원/달러 환율: 실행기가 밤마다 기록한 값, 자동 실행기가 켜져 있으면 실시간 시세로 덮어씀
   var TAX = DATA.tax || null;
+  var FLOWS = (DATA.flows || []).slice().sort(function (a, b) { return a.time < b.time ? 1 : -1; });
   var FX = { rate: (S.fx && +S.fx.usdkrw) || (TAX && +TAX.usdkrw) || null, live: false, as_of: S.fx && S.fx.as_of };
   function pct(v, dp, plain) {
     if (v == null || isNaN(v)) return "—";
@@ -664,26 +672,41 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   var BT = S.backtest || null, MODEL = (BT && BT.series) || {};
   // SPY 비교 기준: 처음 돈을 넣은 순간의 SPY 가격(state.benchmark_start). 없으면 첫 기록일 종가.
   var B0 = +S.benchmark_start || (EQ.length ? +EQ[0].benchmark_close : 0);
-  var series = EQ.map(function (e) {
-    return {
-      date: e.date, equity: +e.equity,
-      ret: initial ? e.equity / initial - 1 : 0,
-      bench: e.benchmark_close != null && B0 ? e.benchmark_close / B0 - 1 : null,
-      model: MODEL[e.date] != null && initial ? MODEL[e.date] / initial - 1 : null
-    };
+  // 입금·출금(e.flow, 달러)은 수익으로 치지 않아요: 하루 수익률 = (오늘 평가금액 - 오늘 입출금) / 어제 평가금액 - 1,
+  // 누적은 그것을 이어 곱한 값 (시간가중 수익률, quant/performance.py 와 같은 계산)
+  var flowSum = EQ.reduce(function (a, e) { return a + (+e.flow || 0); }, 0);
+  var principal = +S.principal || initial + flowSum;
+  function retAfter(prevPt, eq, flow) {
+    if (!prevPt) return initial ? (eq - flow) / initial - 1 : 0;
+    return prevPt.equity ? (1 + prevPt.ret) * (eq - flow) / prevPt.equity - 1 : prevPt.ret;
+  }
+  function setDD(list) {
+    var pk = 1;
+    list.forEach(function (p) { pk = Math.max(pk, 1 + p.ret); p.dd = (1 + p.ret) / pk - 1; });
+  }
+  var series = [], mPrev = null;
+  EQ.forEach(function (e) {
+    var fl = +e.flow || 0, pt = { date: e.date, equity: +e.equity, flow: fl,
+      bench: e.benchmark_close != null && B0 ? e.benchmark_close / B0 - 1 : null, model: null };
+    pt.ret = retAfter(series[series.length - 1], pt.equity, fl);
+    var M = MODEL[e.date];
+    if (M != null) {  // 백테스트도 같은 날 같은 입출금을 넣은 금액이라 같은 방식으로
+      pt.model = mPrev ? (1 + mPrev.r) * (+M - fl) / mPrev.v - 1 : pt.ret;
+      mPrev = { r: pt.model, v: +M };
+    }
+    series.push(pt);
   });
-  var peak = initial;
-  series.forEach(function (p) { peak = Math.max(peak, p.equity); p.dd = p.equity / peak - 1; });
+  setDD(series);
   if (series.length) equity = series[series.length - 1].equity;
   var last = series[series.length - 1] || null, prev = series[series.length - 2] || null;
-  var totalRet = initial ? equity / initial - 1 : 0;
+  var totalRet = last ? last.ret : 0;
   var benchRet = last ? last.bench : null;
   var lastModel = series.filter(function (p) { return p.model != null; }).pop() || null;
   var modelRet = lastModel ? lastModel.model : null;
   var modelGap = lastModel ? lastModel.ret - lastModel.model : null;  // 실제 - 백테스트 (같은 날 기준)
   var maxDD = series.reduce(function (m, p) { return Math.min(m, p.dd); }, 0);
-  var dayAbs = last && prev ? last.equity - prev.equity : null;
-  var dayRet = last && prev ? last.equity / prev.equity - 1 : null;
+  var dayAbs = last && prev ? last.equity - prev.equity - last.flow : null;
+  var dayRet = last && prev ? (1 + last.ret) / (1 + prev.ret) - 1 : null;
   var nextR = S.next_rebalance || {};
   var nextDate = nextR.order_date || nextR.signal_date;
   var dleft = nextDate ? days(today(), parseDate(nextDate)) : null;
@@ -762,11 +785,12 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     if (cents === 100) { whole += 1; cents = 0; }
     var excess = benchRet == null ? null : totalRet - benchRet;
     var kpis = [
-      '<div class="kpi hero"><span class="k">총 평가금액' + (TAX ? '<button type="button" class="ctl mini tax-chip" id="tax-open" title="올해 해외주식 양도소득세 추정">양도세</button>' : "") + (LIVE.on ? '<span class="live-tag' + (LIVE.fresh ? " on" : "") + '" title="' + esc(LIVE.title) + '"><i></i>' + esc(LIVE.label) + "</span>" : "") + '</span><span class="v">$' + whole.toLocaleString("en-US") + "<small>." + String(cents).padStart(2, "0") + "</small></span>" +
+      '<div class="kpi hero"><span class="k">총 평가금액' + '<span class="chips"><button type="button" class="ctl mini" id="money-open" title="원금, 입금·출금 기록, 출금 준비">입출금</button>' + (TAX ? '<button type="button" class="ctl mini" id="tax-open" title="올해 해외주식 양도소득세 추정">양도세</button>' : "") + "</span>" + (LIVE.on ? '<span class="live-tag' + (LIVE.fresh ? " on" : "") + '" title="' + esc(LIVE.title) + '"><i></i>' + esc(LIVE.label) + "</span>" : "") + '</span><span class="v">$' + whole.toLocaleString("en-US") + "<small>." + String(cents).padStart(2, "0") + "</small></span>" +
         '<span class="s">' + (dayAbs == null ? "원금 " + usd(initial, 0) : (LIVE.on ? "오늘 " : "전일 대비 ") + '<b class="' + tone(dayAbs) + '">' + usdSigned(dayAbs) + " (" + pct(dayRet) + ")</b>") + "</span>" +
         (FX.rate ? '<span class="s krw" title="' + esc(fxNote()) + '">≈ ' + won(equity * FX.rate) + '<span class="fxr"> · 환율 ' + FX.rate.toLocaleString("ko-KR", { maximumFractionDigits: 1 }) + "원</span></span>" : "") + "</div>",
-      '<div class="kpi"><span class="k">누적 수익률</span><span class="v ' + tone(totalRet) + '">' + pct(totalRet) + '</span><span class="s">' + usdSigned(equity - initial) + ((S.started_at || EQ[0]) ? " · " + md(S.started_at || EQ[0].date) + "부터" : "") + "</span>" +
-        (FX.rate ? '<span class="s krw">≈ ' + wonSigned((equity - initial) * FX.rate) + "</span>" : "") + "</div>",
+      '<div class="kpi"><span class="k">누적 수익률</span><span class="v ' + tone(totalRet) + '">' + pct(totalRet) + '</span><span class="s">' + usdSigned(equity - principal) +
+        (Math.abs(principal - initial) >= 0.01 ? " · 원금 " + usd(principal, 0) : (S.started_at || EQ[0]) ? " · " + md(S.started_at || EQ[0].date) + "부터" : "") + "</span>" +
+        (FX.rate ? '<span class="s krw">≈ ' + wonSigned((equity - principal) * FX.rate) + "</span>" : "") + "</div>",
       '<div class="kpi"><span class="k">' + esc(bench) + ' 대비</span><span class="v ' + tone(excess) + '">' + (excess == null ? "—" : pct(excess).replace("%", "%p")) + '</span><span class="s">' + esc(bench) + " 보유 시 " + pct(benchRet) + "</span></div>",
       '<div class="kpi"><span class="k">최대 낙폭</span><span class="v ' + (maxDD < 0 ? "down" : "flat") + '">' + pct(maxDD, 1) + '</span><span class="s">지금은 고점 대비 ' + pct(last ? last.dd : 0, 1) + "</span></div>",
       '<div class="kpi"><span class="k">다음 매매</span><span class="v">' + (dleft == null ? "—" : dleft > 0 ? "D-" + dleft : dleft === 0 ? "오늘" : "확인 필요") + '</span><span class="s">' + (nextDate ? md(nextDate) + " (" + wk(nextDate) + ")" : "일정 없음") + "</span></div>"
@@ -811,7 +835,82 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     });
     back.querySelector('[data-act="close"]').focus();
   }
-  $("kpis").addEventListener("click", function (e) { if (e.target.closest && e.target.closest("#tax-open")) openTax(); });
+  // ---- 입금·출금: 원금, 기록, 출금 준비 (요청만 여기서, 매도는 밤 자동 실행이 함) ----
+  function flowRows(list, empty) {
+    if (!list || !list.length) return '<div class="money-note">' + empty + "</div>";
+    return '<div class="tax-grid">' + list.map(function (f) {
+      var amt = +f.amount || 0;
+      return '<div class="flow-row"><span>' + esc(String(f.time || f.date || "").slice(0, 16).replace("T", " ")) + "</span><span>" + (amt > 0 ? "입금" : "출금") +
+        '</span><b class="' + (amt > 0 ? "up" : "down") + '">' + (amt > 0 ? "+" : "-") + usd(Math.abs(amt)) +
+        (f.fx ? ' <small style="color:var(--sub);font-weight:500">≈ ' + won(Math.abs(amt) * f.fx) + "</small>" : "") + "</b></div>";
+    }).join("") + "</div>";
+  }
+  function openMoney() {
+    var back = document.createElement("div"), W = S.withdraw || null, fl = S.flows || {};
+    var row = function (k, v, cls) { return '<div class="tax-row' + (cls ? " " + cls : "") + '"><span>' + k + "</span><b>" + v + "</b></div>"; };
+    var dep = +fl.deposits || 0, wd = +fl.withdrawals || 0, gain = equity - principal;
+    var body = '<div class="tax-grid">' +
+      row("시작 원금" + ((S.started_at || EQ[0]) ? ' <small style="color:var(--dim)">' + md(S.started_at || EQ[0].date) + "</small>" : ""), usd(initial)) +
+      (dep ? row("추가 입금", '<span class="up">+' + usd(dep) + "</span>") : "") +
+      (wd ? row("출금", '<span class="down">-' + usd(wd) + "</span>") : "") +
+      row("지금 원금 (넣은 돈 - 뺀 돈)", usd(principal)) +
+      row("평가금액", usd(equity)) +
+      row("번 돈", '<span class="' + tone(gain) + '">' + usdSigned(gain) + "</span> <small>" + pct(totalRet) + "</small>", "big") + "</div>";
+    var wHtml;
+    if (W) {
+      var st = W.ready ? "✅ 현금으로 빼 뒀어요. 키움 앱(영웅문)에서 환전한 뒤 출금하세요."
+        : W.paused ? "⏸ 일시정지 중이라 아직 팔지 못했어요. 다시 시작하면 다음 실행 때 준비해요."
+        : "⏳ 다음 자동 실행(밤 11:45) 때 보유 종목을 목표 비중대로 조금씩 팔아 현금으로 빼 둘게요.";
+      wHtml = '<div class="tax-grid">' + row("출금 준비 금액", usd(+W.left_usd) + (W.amount_krw ? " <small>(" + won(W.amount_krw) + ")</small>" : "")) + "</div>" +
+        '<div class="money-note">' + st + "</div>" +
+        (DATA.control ? '<div class="acts" style="margin:8px 6px 0;display:flex;justify-content:flex-end"><button type="button" class="ctl" data-act="cancel">출금 준비 취소</button></div>' : "");
+    } else if (DATA.control) {
+      wHtml = '<form class="money-form" data-act="form"><input name="amount" placeholder="예: 300만 (원) 또는 $2000" autocomplete="off" inputmode="text">' +
+        '<button type="submit" class="ctl primary">출금 준비</button></form>' +
+        '<div class="money-note">금액을 정하면 다음 자동 실행 때 그만큼을 현금으로 빼 두고 텔레그램으로 알려 드려요. 남은 돈으로는 같은 전략을 계속해요.</div>';
+    } else {
+      wHtml = '<div class="money-note">Mintory 앱(자동 실행기)에서 열거나 텔레그램 /withdraw 300만 처럼 보내면 출금을 준비할 수 있어요.</div>';
+    }
+    back.className = "modal-back";
+    back.innerHTML = '<div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="w-title" style="width:min(560px,100%)">' +
+      '<div class="m-head"><h3 id="w-title">입금·출금</h3><span class="sub">원금 ' + usd(principal, 0) + "</span>" +
+      '<button type="button" class="ctl x" data-act="close">닫기</button></div>' +
+      '<div class="m-body">' + body + '<div class="tax-sec">수익 일부 출금</div><div data-w>' + wHtml + "</div>" +
+      '<div class="tax-sec">입출금 기록</div>' + flowRows(FLOWS, "아직 입금·출금 기록이 없어요. 계좌에 달러가 새로 들어오거나 나가면 다음 실행 때 자동으로 기록돼요.") + "</div>" +
+      '<div class="m-foot">입금·출금은 실행기가 잔고 변화로 알아채요(매매 없이 달러가 늘거나 줄면). 입금한 돈은 다음 실행 때 목표 비중대로 투자하고, 수익률은 입출금을 빼고 계산해요.</div></div>';
+    document.body.appendChild(back);
+    var close = function () { back.remove(); document.removeEventListener("keydown", onKey); };
+    var onKey = function (e) { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    var box = back.querySelector("[data-w]");
+    back.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var input = back.querySelector('input[name="amount"]'), btn = back.querySelector('.money-form button');
+      btn.disabled = true;
+      api("/api/withdraw", { amount: input.value }).then(function (r) {
+        btn.disabled = false;
+        if (!r._ok) { toast(r.error || "출금 준비를 하지 못했어요."); return; }
+        S.withdraw = r.withdraw;
+        box.innerHTML = '<div class="money-note">' + esc(r.message || "출금 준비를 요청했어요.") + "</div>";
+      }).catch(function () { btn.disabled = false; toast("자동 실행기에 연결하지 못했어요."); });
+    });
+    back.addEventListener("click", function (e) {
+      var act = e.target.closest && e.target.closest("[data-act]"), a = act && act.getAttribute("data-act");
+      if (e.target === back || a === "close") return close();
+      if (a === "cancel") {
+        api("/api/withdraw", { cancel: true }).then(function () {
+          S.withdraw = null; toast("출금 준비를 취소했어요. 빼 둔 현금은 다음 실행 때 다시 투자해요."); close();
+        }).catch(function () { toast("자동 실행기에 연결하지 못했어요."); });
+      }
+    });
+    var first = back.querySelector('input[name="amount"]') || back.querySelector('[data-act="close"]');
+    first.focus();
+  }
+  $("kpis").addEventListener("click", function (e) {
+    if (!e.target.closest) return;
+    if (e.target.closest("#tax-open")) openTax();
+    if (e.target.closest("#money-open")) openMoney();
+  });
   $("legend-strat").textContent = strat.name || "전략";
   $("legend-bench").textContent = bench + " 보유";
   $("legend-model").hidden = modelRet == null;
@@ -1240,11 +1339,11 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   // performance: one row per recorded day
   var perfView = {
     title: "수익률 자세히", btn: "perf-more", sort: { key: "date", asc: false }, ascKeys: ["date"],
-    foot: function () { return "하루에 한 줄, 그날 장 마감 기준이에요. 누적은 시작 원금 " + usd(initial) + " 대비이고, " + bench + "는 같은 날 사서 들고 있었을 때예요." + (modelRet == null ? "" : " 백테스트는 같은 전략을 첫 기록일의 평가금액으로 시작해 장 마감 가격으로 사고팔았다고 계산한 값이에요.") + (LIVE.on ? " 맨 위 '지금' 줄은 실시간이에요." : ""); },
+    foot: function () { return "하루에 한 줄, 그날 장 마감 기준이에요. 누적은 시작 원금 " + usd(initial) + " 대비이고, 입금·출금한 돈은 수익에서 뺐어요. " + bench + "는 같은 날 사서 들고 있었을 때예요." + (modelRet == null ? "" : " 백테스트는 같은 전략을 첫 기록일의 평가금액으로 시작해 장 마감 가격으로 사고팔았다고 계산한 값이에요.") + (LIVE.on ? " 맨 위 '지금' 줄은 실시간이에요." : ""); },
     draw: function (view, sub, body) {
       var rows = series.map(function (p, i) {
-        var pv = i ? series[i - 1].equity : initial;
-        return { date: p.date, live: p.live, equity: p.equity, day: p.equity - pv, dayRet: pv ? p.equity / pv - 1 : null,
+        var pv = i ? series[i - 1].equity : initial, pr = i ? series[i - 1].ret : 0;
+        return { date: p.date, live: p.live, equity: p.equity, flow: p.flow || 0, day: p.equity - pv - (p.flow || 0), dayRet: (1 + p.ret) / (1 + pr) - 1,
                  ret: p.ret, bench: p.bench, excess: p.bench == null ? null : p.ret - p.bench,
                  model: p.model, gap: p.model == null ? null : p.ret - p.model, dd: p.dd };
       });
@@ -1254,7 +1353,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       sub.textContent = days + "일 기록 · 시작 " + (rows.length ? ymd(rows[0].date) : "—");
       var stat = function (k, v, cls, note) { return "<div><span>" + k + '</span><b class="' + (cls || "") + '">' + v + "</b>" + (note ? "<small>" + note + "</small>" : "") + "</div>"; };
       var stats = '<div class="m-stats">' +
-        stat("누적 수익률", pct(totalRet), tone(totalRet), usdSigned(equity - initial)) +
+        stat("누적 수익률", pct(totalRet), tone(totalRet), usdSigned(equity - principal)) +
         stat(bench + " 보유 시", pct(benchRet), tone(benchRet), benchRet == null ? "" : "차이 " + pct(totalRet - benchRet).replace("%", "%p")) +
         (modelRet == null ? "" : stat("백테스트 대비", pct(modelGap).replace("%", "%p"), tone(modelGap),
           "백테스트 " + pct(modelRet) + " · 수수료 " + (BT.cost_bps / 100).toFixed(2) + "%")) +
@@ -1268,7 +1367,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
         ["dd", "고점 대비 낙폭"]
       ]), view.sort, sortRows(rows, view.sort).map(function (r) {
         return '<tr><td class="l">' + (r.live ? "<b>지금</b> " : "") + ymd(r.date) + ' <span class="sub">(' + wk(r.date) + ")</span></td>" +
-          "<td><b>" + usd(r.equity) + "</b></td>" +
+          "<td><b>" + usd(r.equity) + "</b>" + (r.flow ? ' <span class="sub">(' + (r.flow > 0 ? "입금 " : "출금 ") + usd(Math.abs(r.flow), 0) + ")</span>" : "") + "</td>" +
           '<td class="' + tone(r.day) + '">' + usdSigned(r.day) + "</td>" +
           '<td class="' + tone(r.dayRet) + '">' + pct(r.dayRet) + "</td>" +
           '<td class="' + tone(r.ret) + '"><b>' + pct(r.ret) + "</b></td>" +
@@ -1286,21 +1385,22 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   function monthRows() {
     var out = [], prevEnd = initial, prevBench = 0;
     var thisMonth = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }).slice(0, 7);
+    var prevRet = 0;
     series.forEach(function (p) {
       var key = p.date.slice(0, 7), m = out[out.length - 1];
       if (!m || m.month !== key) {
-        if (m) { prevEnd = m.end; prevBench = m.benchEnd; }
-        m = { month: key, start: prevEnd, benchStart: prevBench, peak: prevEnd, mdd: 0, days: 0, live: false };
+        if (m) { prevEnd = m.end; prevBench = m.benchEnd; prevRet = m.endRet; }
+        m = { month: key, start: prevEnd, startRet: prevRet, benchStart: prevBench, peak: 1 + prevRet, mdd: 0, days: 0, live: false, flow: 0 };
         out.push(m);
       }
-      m.end = p.equity; m.days += 1; m.live = m.live || !!p.live || key === thisMonth;
+      m.end = p.equity; m.endRet = p.ret; m.flow += p.flow || 0; m.days += 1; m.live = m.live || !!p.live || key === thisMonth;
       if (p.bench != null) m.benchEnd = p.bench;
-      m.peak = Math.max(m.peak, p.equity);
-      m.mdd = Math.min(m.mdd, p.equity / m.peak - 1);
+      m.peak = Math.max(m.peak, 1 + p.ret);
+      m.mdd = Math.min(m.mdd, (1 + p.ret) / m.peak - 1);
     });
     out.forEach(function (m) {
-      m.pnl = m.end - m.start;
-      m.ret = m.start ? m.end / m.start - 1 : null;
+      m.pnl = m.end - m.start - m.flow;  // 입금·출금은 손익이 아니에요
+      m.ret = (1 + m.endRet) / (1 + m.startRet) - 1;
       m.bench = m.benchEnd != null && m.benchStart != null ? (1 + m.benchEnd) / (1 + m.benchStart) - 1 : null;
       if (m.benchEnd == null) m.benchEnd = m.benchStart;
       m.excess = m.bench == null || m.ret == null ? null : m.ret - m.bench;
@@ -1341,20 +1441,20 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   }
   var monthView = {
     title: "월별 결산", btn: "month-more", sort: { key: "month", asc: false }, ascKeys: ["month"],
-    foot: function () { return "월초 잔고는 전달 마지막 거래일 장 마감 기준(첫 달은 원금)이에요. 수익률은 그 달 하루하루를 이어 붙인 값이고, 낙폭은 그 달 안에서 가장 많이 빠졌던 정도예요." + (LIVE.on ? " 진행 중인 달은 실시간 가격까지 반영돼요." : " 진행 중인 달은 마지막 기록까지예요."); },
+    foot: function () { return "월초 잔고는 전달 마지막 거래일 장 마감 기준(첫 달은 원금)이에요. 손익과 수익률에서 입금·출금한 돈은 뺐어요. 수익률은 그 달 하루하루를 이어 붙인 값이고, 낙폭은 그 달 안에서 가장 많이 빠졌던 정도예요." + (LIVE.on ? " 진행 중인 달은 실시간 가격까지 반영돼요." : " 진행 중인 달은 마지막 기록까지예요."); },
     draw: function (view, sub, body) {
       var rows = monthRows();
       var ups = rows.filter(function (m) { return m.pnl > 0; }).length;
       sub.textContent = rows.length + "개월 · 수익 " + ups + "달 · 손실 " + rows.filter(function (m) { return m.pnl < 0; }).length + "달";
       var years = {};
       rows.forEach(function (m) {
-        var y = m.month.slice(0, 4), Y = years[y] = years[y] || { start: m.start, benchStart: m.benchStart, trades: 0, fee: 0 };
-        Y.end = m.end; Y.benchEnd = m.benchEnd; Y.trades += m.trades; Y.fee += m.fee;
+        var y = m.month.slice(0, 4), Y = years[y] = years[y] || { start: m.start, startRet: m.startRet, benchStart: m.benchStart, trades: 0, fee: 0, flow: 0 };
+        Y.end = m.end; Y.endRet = m.endRet; Y.flow += m.flow; Y.benchEnd = m.benchEnd; Y.trades += m.trades; Y.fee += m.fee;
       });
       var yr = Object.keys(years).length < 2 ? "" : Object.keys(years).sort().map(function (y) {
-        var Y = years[y], r = Y.start ? Y.end / Y.start - 1 : 0, b = Y.benchEnd != null && Y.benchStart != null ? (1 + Y.benchEnd) / (1 + Y.benchStart) - 1 : null;
+        var Y = years[y], r = (1 + Y.endRet) / (1 + Y.startRet) - 1, b = Y.benchEnd != null && Y.benchStart != null ? (1 + Y.benchEnd) / (1 + Y.benchStart) - 1 : null;
         return '<tr class="yr"><td class="l">' + y + "년</td><td>" + usd(Y.start) + "</td><td>" + usd(Y.end) + "</td>" +
-          '<td class="' + tone(Y.end - Y.start) + '">' + usdSigned(Y.end - Y.start) + '</td><td class="' + tone(r) + '">' + pct(r) + "</td>" +
+          '<td class="' + tone(Y.end - Y.start - Y.flow) + '">' + usdSigned(Y.end - Y.start - Y.flow) + '</td><td class="' + tone(r) + '">' + pct(r) + "</td>" +
           '<td class="' + tone(b) + '">' + pct(b) + '</td><td class="' + tone(b == null ? null : r - b) + '">' + (b == null ? "—" : pct(r - b).replace("%", "%p")) + "</td>" +
           "<td></td><td>" + Y.trades + "건</td><td>" + usd(Y.fee) + "</td></tr>";
       }).join("");
@@ -1371,7 +1471,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
           '<td class="' + (m.mdd < 0 ? "down" : "sub") + '">' + pct(m.mdd, 1) + "</td>" +
           '<td class="sub">' + (m.trades ? m.trades + "건" : "—") + '</td><td class="sub">' + usd(m.fee) + "</td></tr>";
       }).join(""), yr + '<tr><td class="l">전체</td><td>' + usd(initial) + "</td><td>" + usd(equity) + "</td>" +
-        '<td class="' + tone(equity - initial) + '">' + usdSigned(equity - initial) + '</td><td class="' + tone(totalRet) + '">' + pct(totalRet) + "</td>" +
+        '<td class="' + tone(equity - principal) + '">' + usdSigned(equity - principal) + '</td><td class="' + tone(totalRet) + '">' + pct(totalRet) + "</td>" +
         '<td class="' + tone(benchRet) + '">' + pct(benchRet) + '</td><td class="' + tone(benchRet == null ? null : totalRet - benchRet) + '">' + (benchRet == null ? "—" : pct(totalRet - benchRet).replace("%", "%p")) + "</td>" +
         '<td class="down">' + pct(maxDD, 1) + "</td><td>" + TRADES.filter(function (t) { return t.status !== "rejected" && t.status !== "cancelled"; }).length + "건</td><td>" +
         usd(TRADES.reduce(function (a, t) { return a + (t.status === "rejected" || t.status === "cancelled" ? 0 : +t.fee || 0); }, 0)) + "</td></tr>");
@@ -1501,14 +1601,15 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     equity = invested + cash;
     dayAbs = known ? dAbs : null;
     dayRet = known && equity - dAbs ? dAbs / (equity - dAbs) : null;
-    totalRet = initial ? equity / initial - 1 : 0;
     // The chart's last point is "now": replace today's recorded row or add one.
+    var todayRec = baseSeries.filter(function (p) { return p.date === ref.session; })[0];
+    var todayFlow = todayRec ? todayRec.flow : 0;
     series = baseSeries.filter(function (p) { return p.date < ref.session; });
+    totalRet = retAfter(series[series.length - 1], equity, todayFlow);
     var b0 = B0 || null, bq = Q[bench];
-    series.push({ date: ref.session, equity: equity, ret: totalRet, live: true,
+    series.push({ date: ref.session, equity: equity, ret: totalRet, live: true, flow: todayFlow,
                   bench: bq && b0 ? bq.price / b0 - 1 : (series.length ? series[series.length - 1].bench : null) });
-    var pk = initial;
-    series.forEach(function (p) { pk = Math.max(pk, p.equity); p.dd = p.equity / pk - 1; });
+    setDD(series);
     last = series[series.length - 1];
     benchRet = last.bench;
     maxDD = series.reduce(function (m, p) { return Math.min(m, p.dd); }, 0);
@@ -1753,7 +1854,10 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
           '</b></span><span>꼭 고칠 것<b>' + (sm.fail || 0) + '</b></span><span>아직 확인 안 함<b>' + (sm.todo || 0) + "</b></span></div>" +
           '<div class="ready-list">' + (r.items || []).map(function (i) {
             return '<div class="ready-row ' + esc(i.status) + '"><i class="ic">' + (readyIcon[i.status] || "·") + "</i><b>" + esc(i.title) + "</b><span>" + esc(i.detail) + "</span></div>";
-          }).join("") + "</div>";
+          }).join("") + "</div>" +
+          (r.flows ? '<div class="tax-sec">실계좌 입금·출금 기록 <span style="font-weight:400">(매일 밤 리허설에서 실계좌 잔고로 감지)</span></div>' +
+            flowRows(r.flows.live, "아직 없어요. 실계좌 앱키를 넣으면 리허설이 실계좌의 입금·출금을 기록해요.") +
+            '<div class="tax-sec">모의투자 입금·출금 기록</div>' + flowRows(r.flows.paper, "아직 없어요.") : "");
       };
       var load = function (path, post) {
         return api(path, post).then(draw).catch(function () { sub.textContent = "자동 실행기에 연결하지 못했어요"; });
