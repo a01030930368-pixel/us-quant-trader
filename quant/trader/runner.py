@@ -267,6 +267,34 @@ class Runner:
                            encoding="utf-8")
             os.replace(tmp, p)
 
+    def _settle_fees(self, meta: dict, cash: float) -> None:
+        """Kiwoom reports neither fills nor fees, but takes the fee out of cash.
+        Once every order of the last batch has settled, the fee is the cash
+        that left beyond the traded value: cash_before - cash - buys + sells.
+        It is split over the batch by traded value. Batches whose broker already
+        reported fees (the simulator) are left alone."""
+        batch = meta.get("fee_batch")
+        p = self.dir / "trades.jsonl"
+        if not batch or not p.exists():
+            return
+        rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]
+        mine = [r for r in rows if r.get("time") == batch["time"] and r.get("status") != "rejected"]
+        if any(r.get("status") in ("pending", "partial") for r in mine):
+            return  # wait for the fills
+        meta.pop("fee_batch", None)
+        if not mine or any(r.get("fee") for r in mine):
+            return
+        value = [r["qty"] * r["price"] for r in mine]
+        net = sum(v if r["side"] == "buy" else -v for r, v in zip(mine, value))
+        fee, total = batch["cash_before"] - cash - net, sum(value)
+        if not (0 < fee <= 0.05 * total):  # anything else is not a fee (deposit, FX, missed fill)
+            return
+        for r, v in zip(mine, value):
+            r["fee"] = round(fee * v / total, 2)
+        tmp = self.dir / ".trades.jsonl.tmp"
+        tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+        os.replace(tmp, p)
+
     def _switch_strategy(self, meta: dict, today: pd.Timestamp) -> dict:
         """When the configured strategy differs from the one that wrote the
         records, move the old trades/equity/meta into archive/<old id>_<date>/
@@ -336,6 +364,7 @@ class Runner:
             return self._state(now, meta, alerts=alerts, positions=positions, cash=cash,
                                prices=prices, targets=targets, scores=scores, sig=sig, canary=canary)
         self._reconcile(positions)
+        self._settle_fees(meta, cash)
         if execute:  # a --check run must not move or re-label the records
             meta = self._switch_strategy(meta, today)
             meta.setdefault("strategy_id", self.cfg.strategy_id)
@@ -365,6 +394,7 @@ class Runner:
                                    f"점검 모드 - {o['side']} {o['symbol']} {o['qty']}주 예정"})
             else:
                 sleeve_of = {t["symbol"]: t["sleeve"] for t in targets}
+                meta["fee_batch"] = {"time": now.isoformat(timespec="seconds"), "cash_before": cash}
                 all_ok = True
                 for o in orders:
                     res = self.broker.place_order(o["symbol"], o["side"], o["qty"], o["ref_price"])
@@ -393,6 +423,8 @@ class Runner:
                     if self.cfg.staggered:
                         meta["last_weights"] = wanted
                 positions, cash = self.broker.positions(), self.broker.cash_usd()
+                self._reconcile(positions)
+                self._settle_fees(meta, cash)
 
         equity = cash + sum(p["qty"] * prices.get(s, 0.0) for s, p in positions.items())
         self._equity_row({"date": str(last.date()), "equity": round(equity, 2),

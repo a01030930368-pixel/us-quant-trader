@@ -82,6 +82,7 @@
 - `side`: `buy` · `sell`
 - `status`: `filled` · `partial` · `pending` · `rejected` · `cancelled` (거부·취소면 `message`에 사유)
 - `date`는 미국 거래일 기준, `time`은 실제 주문 시각입니다.
+- 키움은 체결가와 수수료를 따로 알려주지 않습니다. 그래서 한 번에 낸 주문이 모두 체결되면 `fee`를 현금 변화로 계산해 채웁니다(주문 전 현금 − 지금 현금 − 매수금액 + 매도금액을 거래금액 비율로 나눔). 그 전까지는 0입니다.
 
 ## equity.jsonl (한 줄 = 거래일 하나)
 
