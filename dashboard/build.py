@@ -72,6 +72,30 @@ def render(data: dict, *, full_page: bool = True) -> str:
             "</head>\n<body>\n" + body + "\n</body>\n</html>\n")
 
 
+def page(data_dir: Path | None, *, full_page: bool = True, extra: dict | None = None,
+         quiet: bool = False) -> str:
+    """기록 폴더를 읽어 대시보드 HTML을 만든다. 기록이 없으면(또는 None이면) 샘플로."""
+    source = "paper"
+    if data_dir is None:
+        data_dir, source = SAMPLE_DIR, "sample"
+    elif not (data_dir / "state.json").exists():
+        if not quiet:
+            print(f"아직 {data_dir} 에 모의투자 기록이 없어서 샘플 데이터로 보여드릴게요.")
+        data_dir, source = SAMPLE_DIR, "sample"
+    data = load(data_dir)
+    try:
+        shown = data_dir.resolve().relative_to(ROOT)
+    except ValueError:
+        shown = data_dir
+    data["meta"] = {
+        "source": source,
+        "dir": str(shown).replace("\\", "/") + "/",
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }
+    data.update(extra or {})
+    return render(data, full_page=full_page)
+
+
 def _app_browsers() -> list[Path]:
     """Edge(윈도우 기본)와 크롬의 설치 위치 후보."""
     roots = [os.environ.get(k) for k in ("PROGRAMFILES(X86)", "PROGRAMFILES", "LOCALAPPDATA")]
@@ -80,8 +104,11 @@ def _app_browsers() -> list[Path]:
 
 
 def open_page(path: Path) -> None:
+    open_url(path.resolve().as_uri())
+
+
+def open_url(uri: str) -> None:
     """윈도우에서는 주소창 없는 앱 창으로, 그 밖에는 기본 브라우저로 연다."""
-    uri = path.resolve().as_uri()
     if os.name == "nt":
         for exe in _app_browsers():
             if exe.exists():
@@ -102,33 +129,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fragment", action="store_true", help="<html> 껍데기 없이 본문만 저장")
     args = ap.parse_args(argv)
 
-    data_dir = Path(args.data)
-    source = "paper"
-    if args.sample:
-        data_dir, source = SAMPLE_DIR, "sample"
-    elif not (data_dir / "state.json").exists():
-        print(f"아직 {data_dir} 에 모의투자 기록이 없어서 샘플 데이터로 보여드릴게요.")
-        data_dir, source = SAMPLE_DIR, "sample"
-
+    data_dir = None if args.sample else Path(args.data)
     try:
-        data = load(data_dir)
+        html = page(data_dir, full_page=not args.fragment)
     except (OSError, json.JSONDecodeError) as e:
-        print(f"[오류] {data_dir / 'state.json'} 을 읽지 못했습니다: {e}", file=sys.stderr)
+        print(f"[오류] {Path(args.data) / 'state.json'} 을 읽지 못했습니다: {e}", file=sys.stderr)
         return 1
-
-    try:
-        shown = data_dir.resolve().relative_to(ROOT)
-    except ValueError:
-        shown = data_dir
-    data["meta"] = {
-        "source": source,
-        "dir": str(shown).replace("\\", "/") + "/",
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-    }
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render(data, full_page=not args.fragment), encoding="utf-8")
+    out.write_text(html, encoding="utf-8")
     print(f"대시보드 저장: {out}")
     if not args.no_open:
         open_page(out)

@@ -101,5 +101,12 @@
 ```
 
 - `last_result`: `ok`, 실패하면 `error (exit N)`. 실패면 빨간색으로 표시합니다.
+- `agent`: `running`(대기 중), `trading`(매매 실행 중), `refreshing`(잔고 새로고침 중).
+- `job`: 지금 도는 작업(`auto`, `run`, `refresh`), 없으면 `null`.
+- `last_job`: 마지막으로 끝난 작업 `{"name", "finished", "result"}`. 버튼으로 한 것도 포함합니다.
 - 대시보드는 실제 기록(`paper/`)을 볼 때 5분마다 화면을 새로 읽습니다.
+
+## STOP (선택)
+
+`paper/STOP` 파일이 있으면 실행기는 주문을 내지 않습니다. Mintory 화면의 일시정지 버튼이 이 파일을 만들고, 다시 시작 버튼이 지웁니다.
 
