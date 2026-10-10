@@ -24,7 +24,7 @@ import pandas as pd
 
 from quant import market_calendar as mc
 from quant.data import load_prices
-from quant.strategies import momentum_13612, momentum_blend, momentum_rotation, tranched
+from quant.strategies import REGISTRY, _period_ends, momentum_13612, momentum_blend, momentum_rotation, tranched
 
 KST = timezone(timedelta(hours=9))
 SAFE = "IEF"
@@ -220,6 +220,29 @@ def staggered_targets(close: pd.DataFrame, today: pd.Timestamp,
     return rows, last
 
 
+def tranche_detail(close: pd.DataFrame, today: pd.Timestamp, cfg: TraderConfig) -> list[dict]:
+    """What each tranche holds now, for the dashboard: the day it last rebalanced,
+    whether the canary allowed risk on that day, and its weights (of that tranche)."""
+    px = _completed(close, today)
+    last = close.index[close.index < today.normalize()][-1]
+    params = _tranche_params(cfg)
+    strategy, n, spacing = params.pop("strategy"), params.pop("tranches"), params.pop("spacing")
+    out = []
+    for k in range(n):
+        w = REGISTRY[strategy](px, offset=k * spacing, aggr_share=cfg.aggr_share, **params).loc[last]
+        ends = _period_ends(px.index, "M", k * spacing)
+        ends = ends[ends <= last]
+        decided = ends[-1] if len(ends) else None
+        risk_on = None
+        if cfg.canary and decided is not None:
+            mom = momentum_13612(px.loc[:decided, list(cfg.canary)]).iloc[-1]
+            risk_on = bool((mom > 0).all())
+        out.append({"n": k + 1, "decided": str(decided.date()) if decided is not None else None,
+                    "risk_on": risk_on,
+                    "weights": {t: round(float(v), 4) for t, v in w.items() if v > 1e-9}})
+    return out
+
+
 def canary_status(close: pd.DataFrame, sig: pd.Timestamp, cfg: TraderConfig) -> list[dict]:
     mom = momentum_13612(close.loc[:sig, list(cfg.canary)]).iloc[-1]
     return [{"symbol": c, "score": round(float(mom[c]), 4), "risk_on": bool(mom[c] > 0)}
@@ -242,10 +265,13 @@ def next_rebalance(today: pd.Timestamp, cfg: TraderConfig | None = None) -> dict
     month_end = today + mc.bmonth_end() * 0
     if cfg is not None and cfg.tranches > 1:
         prev_end = today - mc.bmonth_end()
-        days = [end + mc.bday() * (k * cfg.tranche_spacing)
+        days = [(end + mc.bday() * (k * cfg.tranche_spacing), k)
                 for end in (prev_end, month_end) for k in range(cfg.tranches)]
         # the next tranche whose order day (signal day + 1) is today or later
-        month_end = min(d for d in days if d + mc.bday() >= today.normalize())
+        month_end, k = min(d for d in days if d[0] + mc.bday() >= today.normalize())
+        return {"signal_date": str(month_end.date()),
+                "order_date": str((month_end + mc.bday()).date()),
+                "tranche": k + 1, "tranches": cfg.tranches}
     return {"signal_date": str(month_end.date()),
             "order_date": str((month_end + mc.bday()).date())}
 
@@ -485,6 +511,12 @@ class Runner:
             targets = sleeve_targets(close, sig, self.cfg) if sig is not None else []
         scores = signal_scores(close, sig, self.cfg, targets) if sig is not None else []
         canary = canary_status(close, sig, self.cfg) if self.cfg.canary and sig is not None else None
+        parts = None
+        if self.cfg.staggered:
+            try:
+                parts = tranche_detail(close, today, self.cfg)
+            except Exception:  # noqa: BLE001 - display only, never stops a run
+                parts = None
         weights: dict[str, float] = {}
         for t in targets:
             weights[t["symbol"]] = weights.get(t["symbol"], 0.0) + t["weight"]
@@ -496,7 +528,7 @@ class Runner:
                            f"계좌 조회에 실패해 매매하지 않았습니다: {str(e)[:200]}"})
             positions, cash = self._last_holdings()
             return self._state(now, meta, alerts=alerts, positions=positions, cash=cash,
-                               prices=prices, targets=targets, scores=scores, sig=sig, canary=canary)
+                               prices=prices, targets=targets, scores=scores, sig=sig, canary=canary, parts=parts)
         self._reconcile(positions)
         self._settle_fees(meta, cash)
         if execute:  # a --check run must not move or re-label the records
@@ -505,6 +537,8 @@ class Runner:
         meta.setdefault("started_at", str(today.date()))
         meta.setdefault("initial_capital", cash + sum(p["qty"] * prices.get(s, 0.0)
                                                       for s, p in positions.items()))
+        if prices.get(BENCHMARK):  # SPY at the moment the money went in, for a fair comparison
+            meta.setdefault("benchmark_start", round(prices[BENCHMARK], 4))
         if self.cfg.staggered:
             # Tranches change on their own days; trade whenever the target
             # differs from the one last executed.
@@ -582,7 +616,7 @@ class Runner:
         except Exception as e:  # noqa: BLE001 - the comparison must never stop a run
             alerts.append({"level": "info", "message": f"백테스트 비교를 계산하지 못했습니다: {str(e)[:120]}"})
         return self._state(now, meta, alerts=alerts, positions=positions, cash=cash,
-                           prices=prices, targets=targets, scores=scores, sig=sig, canary=canary,
+                           prices=prices, targets=targets, scores=scores, sig=sig, canary=canary, parts=parts,
                            backtest=backtest, preview=preview)
 
     def _extra_rules(self) -> list[str]:
@@ -603,7 +637,8 @@ class Runner:
         return [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
 
     def _state(self, now, meta, alerts, positions=None, cash=None, prices=None,
-               targets=None, scores=None, sig=None, canary=None, backtest=None, preview=None) -> dict:
+               targets=None, scores=None, sig=None, canary=None, backtest=None, preview=None,
+               parts=None) -> dict:
         prices = prices or {}
         if positions is None:
             try:
@@ -631,6 +666,7 @@ class Runner:
             "benchmark": BENCHMARK,
             "started_at": meta.get("started_at"),
             "initial_capital": round(meta.get("initial_capital", self.cfg.initial_capital), 2),
+            "benchmark_start": meta.get("benchmark_start"),
             "updated_at": now.isoformat(timespec="seconds"),
             "cash": round(cash, 2) if cash is not None else None,
             "positions": [{"symbol": s, "qty": p["qty"], "avg_price": round(p["avg_price"], 4),
@@ -647,6 +683,8 @@ class Runner:
         }
         if self.cfg.canary and canary is not None:
             state["signal"]["canary"] = canary
+        if parts:
+            state["signal"]["tranches"] = parts
         if backtest is None:  # early exits (pause, stale data) keep the last comparison
             backtest = self._read("state.json").get("backtest")
         if backtest:

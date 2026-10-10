@@ -318,7 +318,7 @@ def test_run_auto_retries_then_reports_once(tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "run_trader", lambda args: codes.pop(0))
     sent, reports = [], []
     monkeypatch.setattr(notify, "send", lambda text: sent.append(text) or True)
-    monkeypatch.setattr(notify, "notify_run", lambda job, result, paper, before: reports.append(result) or True)
+    monkeypatch.setattr(notify, "notify_run", lambda job, result, paper, before, **kw: reports.append(result) or True)
     monkeypatch.setattr(agent, "datetime", type("D", (), {"now": staticmethod(lambda tz=None: k(2026, 10, 12, 23, 46)),
                                                          "fromisoformat": staticmethod(datetime.fromisoformat)}))
     agent.run_auto(k(2026, 10, 12, 23, 45))
@@ -358,7 +358,7 @@ def test_rehearsal_runs_after_the_nightly_run_and_reports_changes_only(tmp_path,
         return 0
 
     monkeypatch.setattr(agent, "run_trader", fake_trader)
-    monkeypatch.setattr(notify, "notify_run", lambda *a: True)
+    monkeypatch.setattr(notify, "notify_run", lambda *a, **kw: True)
     monkeypatch.setattr(notify, "notify_rehearsal", lambda result, d: sent.append(result) or True)
     env = {"KIWOOM_LIVE_APP_KEY": "k", "KIWOOM_LIVE_SECRET_KEY": "s"}
     monkeypatch.setattr(notify, "read_env", lambda: env)

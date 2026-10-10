@@ -83,12 +83,14 @@ def order_line(t: dict) -> str:
 
 
 def run_message(job: str, result: str, state: dict, new_trades: list[dict],
-                equity: list[dict], daily: bool = True) -> str | None:
+                equity: list[dict], daily: bool = True, reason: str = "") -> str | None:
     """Text for one trader run, or None when nothing is worth a message."""
     problems: list[str] = []
     paused = False
-    if result != "ok":
-        problems.append(f"실행에 실패했어요 ({result}). paper/logs/agent.log 를 확인해 주세요.")
+    failed = result != "ok"
+    if failed:
+        problems.append(f"실행에 실패했어요: {reason}" if reason else "실행에 실패했어요.")
+        problems.append("PC의 Mintory 화면 오른쪽 위 빨간 불을 누르면 다시 볼 수 있어요.")
     for a in state.get("alerts") or []:
         msg = a.get("message", "")
         if msg.startswith("STOP 파일"):
@@ -97,7 +99,9 @@ def run_message(job: str, result: str, state: dict, new_trades: list[dict],
             problems.append(msg)
 
     summary: list[str] = []
-    if equity:
+    if equity and failed:  # this run wrote nothing new: say which day the numbers are from
+        summary.append(f"💵 평가금액 {_usd(float(equity[-1]['equity']))} ({_md(equity[-1]['date'])} 기록 기준)")
+    elif equity:
         cur = float(equity[-1]["equity"])
         summary.append(f"💵 평가금액 {_usd(cur)}")
         if len(equity) >= 2 and float(equity[-2]["equity"]):
@@ -287,7 +291,8 @@ def read_jsonl(path: Path) -> list[dict]:
     return rows
 
 
-def notify_run(job: str, result: str, paper: Path, trades_before: int, path: Path = ENV) -> bool:
+def notify_run(job: str, result: str, paper: Path, trades_before: int, path: Path = ENV,
+               reason: str = "") -> bool:
     """Build and send the message for a run that just finished. Never raises."""
     try:
         if not configured(path):
@@ -298,7 +303,7 @@ def notify_run(job: str, result: str, paper: Path, trades_before: int, path: Pat
             state = {}
         trades = read_jsonl(paper / "trades.jsonl")
         text = run_message(job, result, state, trades[trades_before:],
-                           read_jsonl(paper / "equity.jsonl"), daily=settings(path)["daily"])
+                           read_jsonl(paper / "equity.jsonl"), daily=settings(path)["daily"], reason=reason)
         return send(text, path) if text else False
     except Exception:  # noqa: BLE001 - a notification must never break the agent
         return False

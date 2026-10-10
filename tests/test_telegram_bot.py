@@ -106,3 +106,10 @@ def test_next_command_shows_preview():
                                                           refresh=lambda: "ok"))
     assert "미리보기가 없어요" in handle("next", Actions(state=dict, agent=dict, paused=lambda: False,
                                                     set_paused=lambda v: None, refresh=lambda: "ok"))
+
+
+def test_refresh_failure_shows_the_reason():
+    act = tb.Actions(state=lambda: {}, agent=lambda: {"last_job": {"reason": "앱키가 없어요"}},
+                     paused=lambda: False, set_paused=lambda v: None, refresh=lambda: "error (exit 1)")
+    text = tb.handle("/refresh", act)
+    assert "앱키가 없어요" in text and "exit" not in text

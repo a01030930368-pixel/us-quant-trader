@@ -75,9 +75,11 @@ def checklist(paper: Path, env: dict, agent: dict | None = None, today: date | N
                     f"{days}거래일 기록 (권장 {MIN_DAYS}일 이상)"))
 
     series = (state.get("backtest") or {}).get("series") or {}
-    if equity and series.get(equity[-1]["date"]) and series.get(equity[0]["date"]):
-        real = float(equity[-1]["equity"]) / float(equity[0]["equity"]) - 1
-        model = float(series[equity[-1]["date"]]) / float(series[equity[0]["date"]]) - 1
+    # Same basis as the dashboard: both measured from the starting capital.
+    base = float(state.get("initial_capital") or 0) or (float(equity[0]["equity"]) if equity else 0)
+    if equity and base and series.get(equity[-1]["date"]):
+        real = float(equity[-1]["equity"]) / base - 1
+        model = float(series[equity[-1]["date"]]) / base - 1
         gap = real - model
         out.append(item("gap", "백테스트와의 차이", "ok" if abs(gap) <= MAX_GAP else "warn",
                         f"실제 {real * 100:+.2f}% · 백테스트 {model * 100:+.2f}% · 차이 {gap * 100:+.2f}%p "

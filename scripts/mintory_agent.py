@@ -339,7 +339,7 @@ def _run_job(name: str, notify_done: bool = True) -> str:
     log(f"{JOB_NAMES[name]} 종료: {result}")
     if name not in READ_ONLY_JOBS and notify_done:
         from quant import notify
-        if notify.notify_run(name, result, PAPER, trades_before):
+        if notify.notify_run(name, result, PAPER, trades_before, reason=reason):
             log("휴대폰 알림 보냄")
     update_state(agent="running", job=None,
                  last_job={"name": name, "finished": now_iso(), "result": result, "reason": reason})
@@ -398,7 +398,8 @@ def run_auto(now: datetime, attempt: int = 0) -> str:
             notify.send(retry_message(why, at, attempt + 1))
     else:
         update_state(retry=None)
-        if notify.notify_run("auto", result, PAPER, before):
+        if notify.notify_run("auto", result, PAPER, before,
+                             reason=(read_state().get("last_job") or {}).get("reason", "")):
             log("휴대폰 알림 보냄")
     update_state(last_day=day, last_run=now.isoformat(timespec="seconds"), last_result=result,
                  last_reason=(read_state().get("last_job") or {}).get("reason", ""))

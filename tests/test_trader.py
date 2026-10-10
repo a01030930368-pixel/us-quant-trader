@@ -658,3 +658,25 @@ def test_exchange_rate_is_recorded_for_won_view(tmp_path, close):
     assert eq[-1]["usdkrw"] == 1388.5
     r.fx_source = lambda: None                       # rate unavailable: keep the last one
     assert r.run(close=close, now=datetime(2026, 10, 8, 14, tzinfo=timezone.utc))["fx"]["usdkrw"] == 1388.5
+
+
+def test_tranche_detail_adds_up_to_the_targets(close):
+    from quant.trader.runner import next_rebalance, staggered_targets, tranche_detail
+    cfg = TraderConfig(canary=("EEM",), tranches=4)
+    px = canary_close(close)
+    today = pd.Timestamp("2026-10-09")
+    parts = tranche_detail(px, today, cfg)
+    assert [p["n"] for p in parts] == [1, 2, 3, 4]
+    assert all(p["decided"] <= "2026-10-08" and isinstance(p["risk_on"], bool) for p in parts)
+    total = {}
+    for p in parts:
+        assert sum(p["weights"].values()) == pytest.approx(1.0, abs=1e-3)
+        for s, w in p["weights"].items():
+            total[s] = total.get(s, 0.0) + w / 4
+    rows, _ = staggered_targets(px, today, cfg)
+    want = {}
+    for t in rows:
+        want[t["symbol"]] = want.get(t["symbol"], 0.0) + t["weight"]
+    assert total == pytest.approx(want, abs=1e-3)
+    nxt = next_rebalance(today, cfg)
+    assert nxt["tranches"] == 4 and 1 <= nxt["tranche"] <= 4
