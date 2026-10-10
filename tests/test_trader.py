@@ -349,3 +349,29 @@ def test_canary_runner_trades_only_when_target_changes(tmp_path, close):
     # next day, no tranche date in between: nothing new to trade
     r.run(close=px.loc[:"2026-10-08"], now=datetime(2026, 10, 9, 15, tzinfo=timezone.utc))
     assert len(trades(r)) == len(first)
+
+
+def test_switching_strategy_archives_old_records_and_rebalances(tmp_path, close):
+    px = canary_close(close)
+    old = make_runner(tmp_path)
+    old.run(close=px.loc[:"2026-10-07"], now=datetime(2026, 10, 8, 15, tzinfo=timezone.utc))
+    held_before = old.broker.positions()
+    meta = json.loads((old.dir / "meta.json").read_text(encoding="utf-8"))
+    meta.pop("strategy_id")  # records written before strategy_id existed
+    (old.dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    new = canary_runner(tmp_path)
+    new.run(close=px.loc[:"2026-10-08"], now=datetime(2026, 10, 9, 15, tzinfo=timezone.utc),
+            execute=False)  # a check run changes nothing
+    assert not (new.dir / "archive").exists()
+
+    s = new.run(close=px.loc[:"2026-10-08"], now=datetime(2026, 10, 9, 15, tzinfo=timezone.utc))
+    arch = new.dir / "archive" / "momentum_blend_multi_2026-10-10"
+    assert (arch / "trades.jsonl").exists() and (arch / "equity.jsonl").exists()
+    assert s["started_at"] == "2026-10-10"
+    assert s["strategy"]["id"] == "momentum_blend_multi_canary_eem_t4"
+    fresh = trades(new)
+    assert fresh and all(t["note"] == "분할 리밸런싱" for t in fresh)
+    assert {t["symbol"] for t in fresh} <= set(held_before) | {t["symbol"] for t in s["targets"]}
+    meta = json.loads((new.dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["strategy_id"] == "momentum_blend_multi_canary_eem_t4"

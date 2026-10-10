@@ -267,6 +267,23 @@ class Runner:
                            encoding="utf-8")
             os.replace(tmp, p)
 
+    def _switch_strategy(self, meta: dict, today: pd.Timestamp) -> dict:
+        """When the configured strategy differs from the one that wrote the
+        records, move the old trades/equity/meta into archive/<old id>_<date>/
+        and start a fresh record (start date and capital = today). Holdings
+        stay; this run's rebalance turns them into the new targets."""
+        # Records from before strategy_id was stored (paper trading began
+        # 2026-10-09) were all written by the monthly multi-window blend.
+        old = meta.get("strategy_id", "momentum_blend_multi")
+        if not meta or old in (None, self.cfg.strategy_id):
+            return meta
+        dest = self.dir / "archive" / f"{old}_{today.date()}"
+        dest.mkdir(parents=True, exist_ok=True)
+        for name in ("trades.jsonl", "equity.jsonl", "meta.json"):
+            if (self.dir / name).exists():
+                os.replace(self.dir / name, dest / name)
+        return {}
+
     def _equity_row(self, rec: dict) -> None:
         p = self.dir / "equity.jsonl"
         rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
@@ -319,6 +336,9 @@ class Runner:
             return self._state(now, meta, alerts=alerts, positions=positions, cash=cash,
                                prices=prices, targets=targets, scores=scores, sig=sig, canary=canary)
         self._reconcile(positions)
+        if execute:  # a --check run must not move or re-label the records
+            meta = self._switch_strategy(meta, today)
+            meta.setdefault("strategy_id", self.cfg.strategy_id)
         meta.setdefault("started_at", str(today.date()))
         meta.setdefault("initial_capital", cash + sum(p["qty"] * prices.get(s, 0.0)
                                                       for s, p in positions.items()))
