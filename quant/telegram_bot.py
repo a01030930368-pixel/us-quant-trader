@@ -156,12 +156,12 @@ def status_text(state: dict, agent: dict, paused: bool) -> str:
         lines.append(f"{'✅' if ok else '❌'} 마지막 실행 · {_when(agent['last_run'])} · {'OK' if ok else res}")
     nxt = (state.get("next_rebalance") or {}).get("order_date")
     if nxt:
-        lines.append(f"📅 다음 리밸런싱 주문일 · {nxt}")
+        lines.append(f"📅 다음 리밸런싱 주문일 · {notify._md(nxt)}")
     if agent.get("backup_day"):
-        lines.append(f"🗂 마지막 기록 백업 · {agent['backup_day']}")
+        lines.append(f"🗂 마지막 기록 백업 · {notify._md(agent['backup_day'])}")
     blocks = ["📋 Mintory 상태", "\n".join(lines)]
     if agent.get("missed"):
-        blocks.append("⚠️ 놓친 실행 · " + ", ".join(agent["missed"]))
+        blocks.append("⚠️ 놓친 실행 · " + ", ".join(notify._md(d) for d in agent["missed"]))
     return "\n\n".join(blocks)
 
 
@@ -237,7 +237,9 @@ def handle(text: str, act: Actions) -> str:
             return "▶️ 일시정지 상태가 아니에요.\n\n자동 매매는 그대로 켜져 있어요."
         act.set_paused(False)
         return "▶️ 다시 시작했어요\n\n다음 자동 실행부터 주문을 냅니다."
-    return help_text()
+    if cmd == "help":
+        return help_text()
+    return "🤔 모르는 명령이에요.\n\n/? 를 보내면 명령 목록이 나와요."
 
 
 def _api(token: str, method: str, **params) -> dict:
@@ -268,15 +270,21 @@ def serve(act: Actions, get_offset: Callable[[], int | None], set_offset: Callab
             params = {"timeout": 0 if once else 25, "allowed_updates": ["message"]}
             if get_offset() is not None:
                 params["offset"] = get_offset()
+            stale = 0
             for up in _api(s["token"], "getUpdates", **params).get("result", []):
                 set_offset(up["update_id"] + 1)
                 msg = up.get("message") or {}
                 if str((msg.get("chat") or {}).get("id")) != str(s["chat_id"]):
                     continue
-                if time.time() - msg.get("date", 0) > MAX_AGE or not msg.get("text"):
+                if not msg.get("text"):
+                    continue
+                if time.time() - msg.get("date", 0) > MAX_AGE:
+                    stale += 1
                     continue
                 log(f"텔레그램 명령: {msg['text'][:40]}")
                 notify.send(handle(msg["text"], act))
+            if stale:  # sent while the PC was off or asleep; never run late
+                notify.send(f"⏳ PC가 꺼져 있던 동안 온 명령 {stale}개는 건너뛰었어요.\n\n필요하면 지금 다시 보내 주세요.")
         except Exception as e:  # noqa: BLE001 - keep listening; a 409 means another copy polls
             err = str(e).replace(s["token"], "***") if s["token"] else str(e)
             if err != last_err:  # the bot token must never reach the log

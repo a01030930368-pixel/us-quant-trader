@@ -632,6 +632,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   function pct(v, dp, plain) {
     if (v == null || isNaN(v)) return "—";
     var s = (Math.abs(v) * 100).toFixed(dp == null ? 2 : dp) + "%";
+    if (!/[1-9]/.test(s)) return s;  // 0.0%: no sign
     return v < 0 ? "-" + s : (plain ? "" : "+") + s;
   }
   function tone(v) { return v > 0 ? "up" : v < 0 ? "down" : "flat"; }
@@ -704,7 +705,8 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   info.push(MODES[S.mode] || S.mode || "모의투자");
   if (strat.name) info.push("전략 · " + strat.name);
   var AG = DATA.agent;
-  var mdhm = function (iso) { var m = /^\d{4}-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso || ""); return m ? (+m[1]) + "/" + (+m[2]) + " " + m[3] + ":" + m[4] : ""; };
+  var mdw = function (d) { d = String(d || "").slice(0, 10); return d ? (+d.slice(5, 7)) + "/" + (+d.slice(8, 10)) + "(" + wk(d) + ")" : ""; };
+  var mdhm = function (iso) { var m = /^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})/.exec(iso || ""); return m ? mdw(iso) + " " + m[1] + ":" + m[2] : ""; };
   if (AG && AG.next_run) info.push("다음 자동 실행 " + mdhm(AG.next_run));
   if (AG && AG.last_run) {
     if (AG.last_result && AG.last_result !== "ok") issues.push("마지막 자동 실행 실패 (" + mdhm(AG.last_run) + ")" + (AG.last_reason ? " · " + AG.last_reason : ""));
@@ -717,15 +719,14 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       (LJ.reason ? " · " + LJ.reason : "") + " · 화면 숫자는 그 전 기록이에요");
   }
   if (AG && AG.missed && AG.missed.length) {
-    var mdKo = function (d) { var dt = new Date(d + "T00:00:00"); return (+d.slice(5, 7)) + "/" + (+d.slice(8, 10)) + "(" + "일월화수목금토"[dt.getDay()] + ")"; };
-    issues.push("자동 실행 놓침 " + AG.missed.map(mdKo).join(", ") + " · 밀린 주문은 다음 자동 실행 때 맞춰져요");
+    issues.push("자동 실행 놓침 " + AG.missed.map(mdw).join(", ") + " · 밀린 주문은 다음 자동 실행 때 맞춰져요");
   }
   if (S.updated_at) {
     var age = days(parseDate(S.updated_at), today());
-    info.push("기록 업데이트 " + ymd(S.updated_at) + " " + hm(S.updated_at));
+    info.push("기록 업데이트 " + mdhm(S.updated_at));
     if (META.source !== "sample" && age >= 4) issues.push(age + "일째 기록 갱신 없음");
   }
-  if (AG && AG.backup_day) info.push("마지막 기록 백업 " + AG.backup_day);
+  if (AG && AG.backup_day) info.push("마지막 기록 백업 " + mdw(AG.backup_day));
   var LED = { paused: !!(DATA.control && DATA.control.paused) || (S.alerts || []).some(function (a) { return /^STOP 파일/.test(a.message || ""); }) };
   badges.push('<span class="led-wrap"><button type="button" class="led" id="status-led" aria-haspopup="true" aria-expanded="false"><i></i></button></span>');
   $("badges").innerHTML = badges.join("");
@@ -882,6 +883,11 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     var monthly = range === "all" || ticks.length >= 3;
     if (!monthly) { ticks = []; var every = Math.max(1, Math.round(n / 5)); for (var t = 0; t < n; t += every) if (data[t].date) ticks.push(t); }
     var lastX = -Infinity;
+    if (ticks.length === 1 && data[ticks[0]].date) {  // a single day: label it at the right end
+      var d1 = parseDate(data[ticks[0]].date);
+      s.push('<text x="' + x(ticks[0]).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="end">' + (d1.getMonth() + 1) + "/" + d1.getDate() + "</text>");
+      ticks = [];
+    }
     ticks.forEach(function (i) {
       var xx = x(i);
       if (xx - lastX < 56 || xx > W - padR - 10) return;
@@ -1034,7 +1040,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     var on = cs.every(function (c) { return c.risk_on; });
     return '<div class="canary' + (on ? "" : " off") + '"><i></i><span>' + cs.map(function (c) { return esc(c.symbol); }).join("·") + " 신호 · " +
       (on ? "좋음 · <b>투자</b>" : "나쁨 · <b>" + esc(strat.safe_asset || "IEF") + "로 피함</b>") + "</span><small>" +
-      cs.map(function (c) { return esc(c.symbol) + " " + pct(c.score, 1); }).join(" · ") + " · " + ymd(S.signal.as_of) + "</small></div>";
+      cs.map(function (c) { return esc(c.symbol) + " " + pct(c.score, 1); }).join(" · ") + " · " + md(S.signal.as_of) + " 기준</small></div>";
   }
   // 분할: 돈을 덩어리로 나눠 다른 날 리밸런싱. 각 덩어리가 지금 무엇을 들고 있는지
   function partsHtml() {
@@ -1055,8 +1061,8 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       '<div class="dday">' + (dleft > 0 ? "D-" + dleft : dleft === 0 ? "오늘" : "확인 필요") + "</div></div>" +
       (prog == null ? "" : '<div class="cycle"><div class="track"><span style="width:' + (prog * 100).toFixed(1) + '%"></span></div><div class="ends"><span>' + md(S.last_rebalance) + " 매매</span><span>" + md(nextDate) + "</span></div></div>") +
       '<div class="steps">' +
-      (nextR.signal_date ? '<div class="step"><span class="k">신호 계산</span><b>' + md(nextR.signal_date) + " (" + wk(nextR.signal_date) + ") 장 마감 후</b></div>" : "") +
-      (nextR.order_date ? '<div class="step"><span class="k">주문 실행</span><b>' + md(nextR.order_date) + " (" + wk(nextR.order_date) + ") 개장 직후</b></div>" : "") +
+      (nextR.signal_date ? '<div class="step"><span class="k">신호 계산</span><b>' + md(nextR.signal_date) + " (" + wk(nextR.signal_date) + ") 마감</b></div>" : "") +
+      (nextR.order_date ? '<div class="step"><span class="k">주문 실행</span><b>' + md(nextR.order_date) + " (" + wk(nextR.order_date) + ") 23:45</b></div>" : "") +
       "</div>" + canaryHtml() + previewHtml(S.preview) + partsHtml() + "</div>");
   } else {
     reb.push('<div class="next sub">다음 일정이 아직 기록되지 않았어요.</div>');
@@ -1207,8 +1213,8 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       sub.textContent = rows.length + "종목 · 평가금액 " + usd(invested) + " · 현금 " + usd(cash);
       body.innerHTML = tableHtml([
         ["symbol", "종목", "l"], ["qty", "수량"], ["avg", "평균단가"], ["px", "현재가"], ["cost", "매입금액"],
-        ["value", "평가금액"], ["weight", "비중 (목표)"], ["pnl", "손익"], ["day", "오늘 손익"], ["fee", "수수료"], ["since", "첫 매수"]
-      ], view.sort, rows.map(function (r) {
+        ["value", "평가금액"], ["weight", "비중 (목표)"], ["pnl", "손익"]].concat(LIVE.on ? [["day", "오늘 손익"]] : []).concat([["fee", "수수료"], ["since", "첫 매수"]
+      ]), view.sort, rows.map(function (r) {
         var sl = (targetSl[r.symbol] || (r.p.sleeve ? [r.p.sleeve] : [])).filter(function (v, i, a) { return v && a.indexOf(v) === i; });
         return '<tr><td class="l">' + tickerCell(r.symbol, sl) + "</td>" +
           "<td>" + r.qty.toLocaleString("en-US") + "주</td>" +
@@ -1219,13 +1225,13 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
           "<td>" + pct(r.weight, 1, true) + '<span class="bar"><i style="width:' + (r.weight * 100).toFixed(1) + '%"></i></span>' +
             '<small class="sub">' + (r.target == null ? "목표 없음" : "목표 " + pct(r.target, 0, true)) + "</small></td>" +
           '<td><b class="' + tone(r.pnl) + '">' + usdSigned(r.pnl) + '</b><small class="' + tone(r.pnl) + '">' + pct(r.pr) + "</small></td>" +
-          '<td class="' + tone(r.day) + '">' + (r.day == null ? '<span class="dim">—</span>' : usdSigned(r.day)) + "</td>" +
+          (LIVE.on ? '<td class="' + tone(r.day) + '">' + (r.day == null ? '<span class="dim">—</span>' : usdSigned(r.day)) + "</td>" : "") +
           '<td class="sub">' + usd(r.fee) + "</td>" +
           '<td class="sub">' + (r.since ? esc(r.since.slice(0, 10).replace(/-/g, ".")) : "—") + "</td></tr>";
       }).join(""), '<tr><td class="l">합계</td><td></td><td></td><td></td>' +
         "<td>" + usd(tCost) + "</td><td>" + usd(invested) + "</td><td>" + pct(total ? invested / total : 0, 1, true) + "</td>" +
         '<td class="' + tone(tPnl) + '">' + usdSigned(tPnl) + "<small>" + pct(tCost ? tPnl / tCost : 0) + "</small></td>" +
-        '<td class="' + tone(sum("day")) + '">' + (dayKnown ? usdSigned(sum("day")) : "—") + "</td>" +
+        (LIVE.on ? '<td class="' + tone(sum("day")) + '">' + (dayKnown ? usdSigned(sum("day")) : "—") + "</td>" : "") +
         "<td>" + usd(sum("fee")) + "</td><td></td></tr>");
     }
   };
@@ -1596,7 +1602,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     var paintIndices = function (q) {
       var html = INDEX.map(function (ix) {
         var d = q[ix[0]];
-        if (!d) return '<div class="ix"><span class="n">' + esc(ix[1]) + '</span><span class="v" style="color:var(--dim)">—</span></div>';
+        if (!d) return '<div class="ix" title="시세를 아직 받지 못했어요. 인터넷 연결을 확인해 주세요. 1분 뒤 다시 받아요."><span class="n">' + esc(ix[1]) + '</span><span class="v" style="color:var(--dim)">—</span></div>';
         var ch = d.change, col = ch > 0 ? "var(--up)" : ch < 0 ? "var(--down)" : "var(--sub)";
         return '<div class="ix" title="' + esc(ix[1] + " · " + (d.session || "")) + '"><span class="n">' + esc(ix[1]) + '</span><span class="v">' +
           Number(d.price).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) +

@@ -63,7 +63,8 @@ def test_refresh_busy_and_help():
     assert "현금" in tb.handle("/refresh", act) and box["refreshed"] == 1
     act.refresh = lambda: None
     assert "다른 작업" in tb.handle("/refresh", act)
-    assert "/pause" in tb.handle("뭐해", act)
+    assert "/pause" in tb.handle("/help", act)
+    assert "모르는 명령" in tb.handle("뭐해", act) and "/pause" not in tb.handle("뭐해", act)
 
 
 def test_serve_only_answers_owner_and_hides_token(monkeypatch):
@@ -84,7 +85,8 @@ def test_serve_only_answers_owner_and_hides_token(monkeypatch):
     tb.serve(act, lambda: offset.get("o"), lambda n: offset.__setitem__("o", n),
              log=logs.append, once=True)
     assert offset["o"] == 8
-    assert len(sent) == 1 and "Mintory 상태" in sent[0] and not box["paused"]
+    assert len(sent) == 2 and "Mintory 상태" in sent[0] and not box["paused"]
+    assert "건너뛰었어요" in sent[1] and "1개" in sent[1]
 
     def boom(token, method, **params):
         raise RuntimeError("404 for url https://api.telegram.org/bot123:SECRET/getUpdates")
