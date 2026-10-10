@@ -215,3 +215,23 @@ def test_send_weekly_refreshes_then_sends_once(tmp_path, monkeypatch):
     agent.send_weekly("2026-10-16")
     assert order == [agent.JOBS["refresh"], "2026-10-16"]
     assert agent.read_state()["weekly_sent"] == "2026-10-16"
+
+
+def test_backup_due():
+    assert agent.backup_due(k(2026, 10, 13, 6, 59), None) is None
+    assert agent.backup_due(k(2026, 10, 13, 7, 0), "2026-10-12") == "2026-10-13"
+    assert agent.backup_due(k(2026, 10, 17, 9, 0), None) == "2026-10-17"     # weekends too
+    assert agent.backup_due(k(2026, 10, 13, 23, 0), "2026-10-13") is None
+
+
+def test_make_backup_records_state(tmp_path, monkeypatch):
+    from quant import notify
+    monkeypatch.setattr(agent, "STATE", tmp_path / "paper" / "agent.json")
+    monkeypatch.setattr(agent, "LOG", tmp_path / "agent.log")
+    monkeypatch.setattr(agent, "PAPER", tmp_path / "paper")
+    monkeypatch.setattr(agent, "BACKUPS", tmp_path / "backups")
+    monkeypatch.setattr(notify, "read_env", lambda *a: {})
+    agent.write_state({"last_day": "2026-10-12"})
+    agent.make_backup("2026-10-13")
+    assert (tmp_path / "backups" / "paper-2026-10-13.zip").exists()
+    assert agent.read_state()["backup_day"] == "2026-10-13"

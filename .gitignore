@@ -7,3 +7,4 @@ reports/
 .pytest_cache/
 paper/
 .mintory-update.json
+backups/

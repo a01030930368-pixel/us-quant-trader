@@ -3,7 +3,7 @@
     python scripts/update.py          # update.bat이 실행
     python scripts/update.py --check  # 새 버전이 있는지만 확인
 
-- .env, paper/(매매 기록), reports/, data_cache/는 절대 건드리지 않는다.
+- .env, paper/(매매 기록), backups/, reports/, data_cache/는 절대 건드리지 않는다.
 - 저장소가 비공개라 .env 의 GITHUB_TOKEN(읽기 전용 토큰)으로 받는다.
 - 지난번 업데이트 때 설치했는데 새 버전에서 사라진 파일은 지운다.
 - requirements.txt가 바뀌면 pip install을 다시 한다.
@@ -33,7 +33,7 @@ REPO = "a01030930368-pixel/us-quant-trader"
 BRANCH = "main"
 API = "https://api.github.com"
 MANIFEST = ROOT / ".mintory-update.json"
-KEEP = {".env", "paper", "reports", "data_cache", ".venv", ".git", MANIFEST.name}
+KEEP = {".env", "paper", "backups", "reports", "data_cache", ".venv", ".git", MANIFEST.name}
 TOKEN_PAGE = "https://github.com/settings/personal-access-tokens/new"
 
 TOKEN_HELP = f"""

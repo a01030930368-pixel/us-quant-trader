@@ -162,6 +162,29 @@ def weekly_due(now: datetime, last_week: str | None) -> str | None:
     return friday if friday != last_week else None
 
 
+BACKUP_AT = 7  # KST hour; the night's run and fills are final by then
+BACKUPS = ROOT / "backups"
+
+
+def backup_due(now: datetime, last: str | None) -> str | None:
+    """Today's date once it is past 07:00 KST and today's backup is not made yet."""
+    now = now.astimezone(KST)
+    day = now.date().isoformat()
+    return day if now.hour >= BACKUP_AT and day != last else None
+
+
+def make_backup(day: str) -> None:
+    from quant import backup, notify
+    try:
+        saved = backup.daily(PAPER, BACKUPS, day, notify.read_env().get("BACKUP_DIR"))
+    except OSError as e:
+        log(f"기록 백업 실패: {e}")
+        return
+    if saved:
+        log("기록 백업: " + ", ".join(str(p) for p in saved))
+    update_state(backup_day=day, backup_files=[str(p) for p in saved])
+
+
 def now_iso() -> str:
     return datetime.now(KST).isoformat(timespec="seconds")
 
@@ -419,6 +442,10 @@ def loop(restarted: bool = False) -> None:
         week = weekly_due(now, state.get("weekly_sent"))
         if week:
             send_weekly(week)
+            state = read_state()
+        day = backup_due(now, state.get("backup_day"))
+        if day and not _job["name"]:
+            make_backup(day)
             state = read_state()
         update_state(agent="running" if not _job["name"] else read_state().get("agent"),
                      checked_at=now_iso(),

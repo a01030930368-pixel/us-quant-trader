@@ -121,6 +121,8 @@ def status_text(state: dict, agent: dict, paused: bool) -> str:
     nxt = (state.get("next_rebalance") or {}).get("order_date")
     if nxt:
         lines.append(f"📅 다음 리밸런싱 주문일 · {nxt}")
+    if agent.get("backup_day"):
+        lines.append(f"🗂 마지막 기록 백업 · {agent['backup_day']}")
     blocks = ["📋 Mintory 상태", "\n".join(lines)]
     if agent.get("missed"):
         blocks.append("⚠️ 놓친 실행 · " + ", ".join(agent["missed"]))

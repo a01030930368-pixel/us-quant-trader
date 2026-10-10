@@ -18,7 +18,7 @@ def write(paper, days=25, model_drift=0.0, trades=()):
     (paper / "state.json").write_text(json.dumps({"backtest": {"series": series}}), encoding="utf-8")
 
 
-AGENT = {"last_run": "2026-11-25T23:46:00+09:00", "last_result": "ok", "missed": []}
+AGENT = {"last_run": "2026-11-25T23:46:00+09:00", "last_result": "ok", "missed": [], "backup_day": "2026-11-26"}
 
 
 def by_id(items):
@@ -30,7 +30,7 @@ def test_all_ready(tmp_path):
     (tmp_path / readiness.KEY_CHECK).write_text(json.dumps({"ok": True, "time": "2026-11-26T09:00", "cash_usd": 1234.5}))
     items = readiness.checklist(tmp_path, ENV, AGENT, date(2026, 11, 26), wake=True)
     assert {i["id"]: i["status"] for i in items} == dict.fromkeys(
-        ["days", "gap", "runs", "orders", "telegram", "limit", "loss", "keys", "api", "wake", "paused"], "ok")
+        ["days", "gap", "runs", "orders", "telegram", "limit", "loss", "keys", "api", "wake", "backup", "paused"], "ok")
     assert readiness.summary(items)["ready"]
     assert "$1,234.50" in by_id(items)["api"]["detail"]
 
@@ -49,6 +49,7 @@ def test_problems_are_flagged(tmp_path):
     assert items["loss"]["status"] == "warn"
     assert items["api"]["status"] == "todo"
     assert items["paused"]["status"] == "warn"
+    assert items["backup"]["status"] == "todo"
     assert "wake" not in items                       # not on Windows: cannot tell
     assert not readiness.summary(list(items.values()))["ready"]
 

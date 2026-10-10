@@ -146,6 +146,15 @@ def checklist(paper: Path, env: dict, agent: dict | None = None, today: date | N
         out.append(item("wake", "PC 깨우기 작업", "ok" if wake else "warn",
                         "평일 23:40에 PC를 깨워요" if wake else "Mintory를 한 번 다시 열면 등록돼요"))
 
+    last = agent.get("backup_day")
+    extra = " · BACKUP_DIR 에도 복사" if env.get("BACKUP_DIR") else " · BACKUP_DIR 를 정하면 다른 폴더에도 한 부 더"
+    if not last:
+        out.append(item("backup", "기록 백업", "todo", "아직 백업이 없어요. 매일 아침 7시에 만들어요"))
+    else:
+        fresh = last >= (today - timedelta(days=2)).isoformat()
+        out.append(item("backup", "기록 백업", "ok" if fresh else "warn",
+                        f"마지막 백업 {last}" + (extra if fresh else " · 며칠째 백업이 없어요")))
+
     paused = any(str(a.get("message", "")).startswith("STOP 파일") for a in state.get("alerts") or [])
     paused = paused or (paper / "STOP").exists()
     out.append(item("paused", "일시정지", "warn" if paused else "ok",
