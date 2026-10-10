@@ -121,3 +121,13 @@ def test_one_job_at_a_time(server):
 def test_agent_alive_and_single_instance(server):
     assert agent.agent_alive()
     assert agent.start_server() is None
+
+
+def test_port_taken_spots_an_old_agent_that_binds_without_serving(server):
+    held = socket.socket()
+    try:
+        held.bind(("127.0.0.1", 0))
+        agent.PORT = held.getsockname()[1]   # monkeypatched back by the fixture
+        assert agent.port_taken() and not agent.agent_alive()
+    finally:
+        held.close()

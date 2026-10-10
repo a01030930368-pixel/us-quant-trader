@@ -323,15 +323,34 @@ def agent_alive() -> bool:
         return False
 
 
+def port_taken() -> bool:
+    """True when something holds the port without serving (an agent from before buttons)."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", PORT))
+        return False
+    except OSError:
+        return True
+    finally:
+        probe.close()
+
+
 def open_app() -> int:
     """Open the Mintory window from the agent and refresh balances (no orders).
     Falls back to the old file page when the agent does not come up."""
-    for _ in range(30):
-        if agent_alive():
+    print("Mintory를 여는 중...")
+    deadline = time.monotonic() + 15
+    while not agent_alive():
+        if time.monotonic() >= deadline:
             break
         time.sleep(0.5)
     else:
-        print("자동 실행기에 연결하지 못해 버튼 없는 화면으로 엽니다.")
+        deadline = None
+    if deadline is not None:
+        if port_taken():
+            print("예전 버전의 자동 실행기가 아직 켜져 있어 새 화면을 열 수 없어요.\n"
+                  "PC를 재시작하거나, 작업 관리자 > 세부 정보에서 pythonw.exe를 끝낸 뒤 다시 열어주세요.")
+        print("지금은 버튼 없는 화면으로 엽니다. 잔고를 읽는 중...")
         python = sys.executable.replace("pythonw.exe", "python.exe")
         return subprocess.call([python, str(ROOT / "scripts" / "run_trader.py"),
                                 *JOBS["refresh"], "--open"], cwd=ROOT)
