@@ -1,6 +1,8 @@
-"""Mintory 자동 실행기: 앱이 켜져 있는 동안 매일 정해진 시각에 모의투자를 돌린다.
+"""Mintory 자동 실행기: 앱이 켜져 있는 동안 매일 정해진 시각에 모의투자를 돌리고,
+Mintory 화면의 버튼(잔고 새로고침, 지금 매매 실행, 일시정지)을 처리한다.
 
     pythonw scripts/mintory_agent.py                    # 창 없이 백그라운드로 (mintory.bat이 실행)
+    python scripts/mintory_agent.py --open              # Mintory 창 열기 (mintory.bat이 실행)
     python scripts/mintory_agent.py --install-startup   # 윈도우 시작 시 자동으로 켜지게 등록
     python scripts/mintory_agent.py --uninstall-startup # 자동 시작 해제
     python scripts/mintory_agent.py --status            # 다음 실행 시각 확인
@@ -8,7 +10,9 @@
 - 한국시간 월~금 밤 23:45에 `run_trader.py --mode kiwoom`을 실행한다(미국장 중).
   리밸런싱 날에만 주문하고 나머지 날은 기록과 대시보드 갱신만 한다.
 - 23:45 이후 새벽 5시 전에 켜졌는데 그날 실행이 아직이면 바로 실행한다.
-- 한 번에 하나만 돈다(이미 떠 있으면 조용히 종료).
+- 화면은 http://127.0.0.1:47321 에서 보여준다. 이 주소는 이 PC 안에서만 열린다.
+  같은 포트가 "이미 켜져 있음" 표시도 겸해서, 한 번에 하나만 돈다.
+- 일시정지는 paper/STOP 파일을 만들고 지우는 것과 같다(실행기가 STOP이 있으면 주문을 안 냄).
 - 상태는 paper/agent.json, 로그는 paper/logs/agent.log.
 - 이 파일이 바뀌면(update.bat 업데이트) 스스로 새 코드로 다시 켜진다.
 """
@@ -20,18 +24,36 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
+import urllib.request
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 KST = timezone(timedelta(hours=9))
 RUN_AT = (23, 45)          # KST, inside the US session in summer and winter time
 CATCHUP_UNTIL = 5          # KST hour the US session ends
-LOCK_PORT = 47321          # a bound localhost port = "agent already running"
-STATE = ROOT / "paper" / "agent.json"
-LOG = ROOT / "paper" / "logs" / "agent.log"
+PORT = 47321               # the dashboard server; a listener here = "agent already running"
+LOCK_PORT = PORT
+URL = f"http://127.0.0.1:{PORT}/"
+PAPER = ROOT / "paper"
+STATE = PAPER / "agent.json"
+STOP = PAPER / "STOP"
+LOG = PAPER / "logs" / "agent.log"
 STARTUP_NAME = "Mintory agent.bat"
+WATCHED = [Path(__file__).resolve(), ROOT / "dashboard" / "build.py"]
+
+# What each button runs. Both use the Kiwoom mock account; there is no live mode here.
+JOBS = {
+    "refresh": ["--mode", "kiwoom", "--check"],   # read balances only, never orders
+    "run": ["--mode", "kiwoom"],                  # the same run as the 23:45 schedule
+}
+JOB_NAMES = {"refresh": "잔고 새로고침", "run": "매매 실행", "auto": "자동 매매 실행"}
 
 
 def session_day(now: datetime) -> str:
@@ -67,11 +89,18 @@ def next_run(now: datetime, last_day: str | None) -> datetime:
     raise AssertionError("unreachable")
 
 
+def now_iso() -> str:
+    return datetime.now(KST).isoformat(timespec="seconds")
+
+
 def read_state() -> dict:
     try:
         return json.loads(STATE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+
+
+_state_lock = threading.Lock()
 
 
 def write_state(state: dict) -> None:
@@ -81,75 +110,240 @@ def write_state(state: dict) -> None:
     os.replace(tmp, STATE)
 
 
+def update_state(**changes) -> dict:
+    with _state_lock:
+        state = read_state()
+        state.update(changes)
+        write_state(state)
+        return state
+
+
 def log(msg: str) -> None:
     LOG.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG, "a", encoding="utf-8") as f:
-        f.write(f"{datetime.now(KST).isoformat(timespec='seconds')} {msg}\n")
+        f.write(f"{now_iso()} {msg}\n")
 
 
-def run_trader() -> int:
+def run_trader(args: list[str] = JOBS["run"]) -> int:
     python = sys.executable.replace("pythonw.exe", "python.exe")
     with open(LOG, "a", encoding="utf-8") as out:
-        proc = subprocess.run([python, str(ROOT / "scripts" / "run_trader.py"), "--mode", "kiwoom"],
+        proc = subprocess.run([python, str(ROOT / "scripts" / "run_trader.py"), *args],
                               cwd=ROOT, stdout=out, stderr=subprocess.STDOUT,
                               env={**os.environ, "PYTHONIOENCODING": "utf-8"},
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     return proc.returncode
 
 
+# -- jobs: one trader run at a time, whether from the schedule or a button ------
+_job_lock = threading.Lock()
+_job: dict = {"name": None, "started": None}
+
+
+def _run_job(name: str) -> str:
+    """Run a job while holding _job_lock; returns "ok" or an error text."""
+    _job.update(name=name, started=now_iso())
+    update_state(agent="trading" if name != "refresh" else "refreshing", job=name,
+                 checked_at=_job["started"])
+    log(f"{JOB_NAMES[name]} 시작")
+    try:
+        code = run_trader(JOBS.get(name, JOBS["run"]))
+        result = "ok" if code == 0 else f"error (exit {code})"
+    except Exception as e:  # noqa: BLE001 - a failed run must not kill the agent
+        result = f"error ({e})"
+    log(f"{JOB_NAMES[name]} 종료: {result}")
+    update_state(agent="running", job=None,
+                 last_job={"name": name, "finished": now_iso(), "result": result})
+    _job.update(name=None, started=None)
+    return result
+
+
+def start_job(name: str) -> bool:
+    """Start a button job in the background. False if another run is going."""
+    if not _job_lock.acquire(blocking=False):
+        return False
+
+    def work():
+        try:
+            _run_job(name)
+        finally:
+            _job_lock.release()
+
+    threading.Thread(target=work, daemon=True).start()
+    return True
+
+
+def set_paused(paused: bool) -> None:
+    if paused:
+        PAPER.mkdir(parents=True, exist_ok=True)
+        STOP.write_text("Mintory 화면에서 일시정지함\n", encoding="utf-8")
+        log("일시정지: 주문을 내지 않음")
+    else:
+        STOP.unlink(missing_ok=True)
+        log("다시 시작: 주문을 다시 냄")
+
+
+def control_state() -> dict:
+    state = read_state()
+    return {"paused": STOP.exists(), "busy": _job["name"], "busy_since": _job["started"],
+            "last_job": state.get("last_job"), "next_run": state.get("next_run")}
+
+
+# -- the dashboard server (127.0.0.1 only) --------------------------------------
+class Server(ThreadingHTTPServer):
+    # On Windows SO_REUSEADDR lets a second process bind the same port, which would
+    # break "one agent at a time". Linux needs it to rebind right after a restart.
+    allow_reuse_address = os.name != "nt"
+    daemon_threads = True
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "Mintory"
+
+    def log_message(self, *args) -> None:  # keep agent.log for trading, not page loads
+        pass
+
+    def _host_ok(self) -> bool:
+        # Only pages opened at our own address; blocks DNS-rebinding tricks.
+        return self.headers.get("Host", "") in (f"127.0.0.1:{PORT}", f"localhost:{PORT}")
+
+    def _send(self, code: int, body: bytes, ctype: str) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _json(self, code: int, obj: dict) -> None:
+        self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
+                   "application/json; charset=utf-8")
+
+    def do_GET(self) -> None:
+        if not self._host_ok():
+            return self._json(403, {"error": "forbidden"})
+        path = urlsplit(self.path).path
+        if path == "/":
+            try:
+                from dashboard import build
+                html = build.page(PAPER, extra={"control": control_state()}, quiet=True)
+            except Exception as e:  # noqa: BLE001
+                return self._send(500, f"대시보드를 만들지 못했습니다: {e}".encode("utf-8"),
+                                  "text/plain; charset=utf-8")
+            return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+        if path == "/api/status":
+            return self._json(200, control_state())
+        self._json(404, {"error": "not found"})
+
+    def do_POST(self) -> None:
+        # The custom header forces a CORS preflight, which we never approve, so other
+        # websites open in the browser cannot press these buttons.
+        if not self._host_ok() or self.headers.get("X-Mintory") != "1":
+            return self._json(403, {"error": "forbidden"})
+        length = min(int(self.headers.get("Content-Length") or 0), 4096)
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except ValueError:
+            body = {}
+        path = urlsplit(self.path).path
+        if path in ("/api/refresh", "/api/run"):
+            name = path.rsplit("/", 1)[1]
+            if not start_job(name):
+                return self._json(409, {"error": f"{JOB_NAMES.get(_job['name'], '다른 작업')} 중이에요. "
+                                                 "끝나면 다시 눌러주세요.", **control_state()})
+            return self._json(200, control_state())
+        if path == "/api/pause":
+            set_paused(bool(body.get("paused", True)))
+            return self._json(200, control_state())
+        self._json(404, {"error": "not found"})
+
+
+def start_server(wait: float = 0) -> Server | None:
+    """Bind the dashboard port. None if another agent already has it."""
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            server = Server(("127.0.0.1", PORT), Handler)
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(2)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
 def code_mtime() -> float:
-    return Path(__file__).stat().st_mtime
+    return sum(p.stat().st_mtime for p in WATCHED if p.exists())
 
 
-def restart(lock: socket.socket) -> None:
+def restart(server: Server) -> None:
     """Hand over to a fresh copy of this script running the updated code."""
     log("코드가 업데이트되어 자동 실행기를 다시 켬")
-    lock.close()
+    server.shutdown()
+    server.server_close()
     flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
              | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
-    subprocess.Popen([sys.executable, str(Path(__file__).resolve())], cwd=ROOT,
+    subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--restarted"], cwd=ROOT,
                      creationflags=flags, start_new_session=os.name != "nt")
 
 
-def loop() -> None:
-    lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        lock.bind(("127.0.0.1", LOCK_PORT))
-    except OSError:
+def loop(restarted: bool = False) -> None:
+    server = start_server(wait=150 if restarted else 0)
+    if server is None:
         log("자동 실행기가 이미 켜져 있어 새로 켜지 않음")
         return
-    log(f"자동 실행기 시작 (pid {os.getpid()})")
+    log(f"자동 실행기 시작 (pid {os.getpid()}, 화면 {URL})")
     started = code_mtime()
+    update_state(agent="running", job=None)
     while True:
-        if code_mtime() != started:
-            restart(lock)
+        if code_mtime() != started and _job_lock.acquire(blocking=False):
+            restart(server)
             return
         state = read_state()
         now = datetime.now(KST)
         if due_now(now, state.get("last_day")):
-            log("모의투자 실행")
-            state.update(agent="trading", checked_at=now.isoformat(timespec="seconds"))
-            write_state(state)
-            code = run_trader()
-            state.update(last_day=session_day(now), last_run=now.isoformat(timespec="seconds"),
-                         last_result="ok" if code == 0 else f"error (exit {code})")
-            log(f"모의투자 종료: {state['last_result']}")
-        state.update(agent="running", checked_at=now.isoformat(timespec="seconds"),
+            with _job_lock:  # waits for a button run to finish first
+                result = _run_job("auto")
+            update_state(last_day=session_day(now), last_run=now.isoformat(timespec="seconds"),
+                         last_result=result)
+            state = read_state()
+        update_state(agent="running" if not _job["name"] else read_state().get("agent"),
+                     checked_at=now_iso(),
                      next_run=next_run(datetime.now(KST), state.get("last_day"))
                      .isoformat(timespec="minutes"))
-        write_state(state)
         time.sleep(60)
 
 
 def agent_alive() -> bool:
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    """True when an agent is listening on the dashboard port."""
     try:
-        probe.bind(("127.0.0.1", LOCK_PORT))
-        return False
+        with socket.create_connection(("127.0.0.1", PORT), timeout=1):
+            return True
     except OSError:
-        return True
-    finally:
-        probe.close()
+        return False
+
+
+def open_app() -> int:
+    """Open the Mintory window from the agent and refresh balances (no orders).
+    Falls back to the old file page when the agent does not come up."""
+    for _ in range(30):
+        if agent_alive():
+            break
+        time.sleep(0.5)
+    else:
+        print("자동 실행기에 연결하지 못해 버튼 없는 화면으로 엽니다.")
+        python = sys.executable.replace("pythonw.exe", "python.exe")
+        return subprocess.call([python, str(ROOT / "scripts" / "run_trader.py"),
+                                *JOBS["refresh"], "--open"], cwd=ROOT)
+    try:
+        req = urllib.request.Request(URL + "api/refresh", data=b"{}", method="POST",
+                                     headers={"X-Mintory": "1", "Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=5).close()
+    except OSError:
+        pass  # already busy, or an old agent without buttons: just open the page
+    from dashboard import build
+    build.open_url(URL)
+    return 0
 
 
 def startup_file() -> Path:
@@ -173,12 +367,16 @@ def main() -> None:
     ap.add_argument("--install-startup", action="store_true")
     ap.add_argument("--uninstall-startup", action="store_true")
     ap.add_argument("--status", action="store_true")
+    ap.add_argument("--open", action="store_true", help="Mintory 창 열기")
+    ap.add_argument("--restarted", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
     if args.install_startup:
         print(f"윈도우 시작 시 자동 실행 등록: {install_startup()}")
     elif args.uninstall_startup:
         startup_file().unlink(missing_ok=True)
         print("자동 시작을 해제했습니다.")
+    elif args.open:
+        sys.exit(open_app())
     elif args.status:
         state = read_state()
         alive = agent_alive()
@@ -188,12 +386,14 @@ def main() -> None:
             print(f"자동 실행기: 지금 모의투자 실행 중 ({state.get('checked_at')} 시작)")
         else:
             print("자동 실행기: 켜져 있음")
+        if STOP.exists():
+            print("일시정지 중: 주문을 내지 않습니다")
         nxt = next_run(datetime.now(KST), state.get("last_day")).isoformat(timespec="minutes")
         print(f"다음 자동 실행: {nxt}")
         print(f"마지막 실행: {state.get('last_run') or '아직 없음'} ({state.get('last_result') or '-'})")
     else:
         try:
-            loop()
+            loop(restarted=args.restarted)
         except Exception:
             import traceback
             log("자동 실행기 오류로 종료\n" + traceback.format_exc())

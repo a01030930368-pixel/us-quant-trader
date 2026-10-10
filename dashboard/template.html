@@ -246,6 +246,45 @@ tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
 .rank:not(.sel) .r { opacity: 0.6; }
 .check { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--c1); margin-left: 6px; vertical-align: 2px; }
 
+/* In-app controls (only when the page is served by the Mintory agent) */
+.controls { display: flex; align-items: center; gap: 6px; flex: none; }
+.ctl {
+  appearance: none; display: inline-flex; align-items: center; gap: 7px;
+  height: 30px; padding: 0 12px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--fg);
+  font: inherit; font-size: 12.5px; font-weight: 600; white-space: nowrap;
+  transition: background .15s, border-color .15s, opacity .15s;
+}
+.ctl:hover:not(:disabled) { background: #222630; border-color: #353a44; }
+.ctl:disabled { opacity: 0.45; cursor: default; }
+.ctl.primary { background: var(--fg); color: #0b0c0f; border-color: var(--fg); }
+.ctl.primary:hover:not(:disabled) { background: #ffffff; border-color: #ffffff; }
+.ctl.on { color: var(--up); background: var(--up-bg); border-color: rgba(255, 77, 94, 0.35); }
+.ctl svg { width: 14px; height: 14px; flex: none; }
+.ctl.busy svg { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.badge.paused { color: #fff; background: var(--up); font-weight: 600; }
+.modal-back {
+  position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 16px;
+  background: rgba(5, 6, 8, 0.66); backdrop-filter: blur(3px);
+}
+.modal {
+  width: min(440px, 100%); background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 16px; padding: 22px 22px 18px; display: grid; gap: 14px;
+  box-shadow: 0 30px 60px -20px rgba(0, 0, 0, 0.8);
+}
+.modal h3 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.02em; }
+.modal p { margin: 0; color: var(--sub); font-size: 13.5px; line-height: 1.6; }
+.modal .mkt { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 10px; background: var(--panel); font-size: 13px; }
+.modal .mkt i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.modal .acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.modal .ctl { height: 36px; padding: 0 16px; font-size: 13.5px; }
+.toast {
+  position: fixed; right: 24px; bottom: 24px; z-index: 30; max-width: 360px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 14px; font-size: 13px; box-shadow: 0 16px 32px -12px rgba(0, 0, 0, 0.7);
+}
+
 
 /* Smaller windows: stack and let the page scroll. */
 @media (max-width: 1180px), (max-height: 700px) {
@@ -292,6 +331,20 @@ tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
       <h1 id="strategy-name">모의투자 대시보드</h1>
     </div>
     <div class="top-right" id="badges"></div>
+    <div class="controls" id="controls" hidden>
+      <button type="button" class="ctl" id="btn-refresh" title="키움 모의계좌 잔고를 다시 읽어요. 주문은 내지 않아요.">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2.5v3h-3"/></svg>
+        <span>잔고 새로고침</span>
+      </button>
+      <button type="button" class="ctl primary" id="btn-run" title="밤 11:45 자동 실행과 같은 작업을 지금 한 번 해요.">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 2.8v10.4a.6.6 0 0 0 .92.5l8.1-5.2a.6.6 0 0 0 0-1L5.42 2.3a.6.6 0 0 0-.92.5z"/></svg>
+        <span>지금 매매 실행</span>
+      </button>
+      <button type="button" class="ctl" id="btn-pause" title="누르면 그 뒤로 주문을 내지 않아요. 자동 실행도 멈춰요.">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4" y="3" width="2.6" height="10" rx=".8"/><rect x="9.4" y="3" width="2.6" height="10" rx=".8"/></svg>
+        <span>일시정지</span>
+      </button>
+    </div>
   </header>
 
   <main class="workspace">
@@ -452,6 +505,7 @@ tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
   var badges = [];
   if (META.source === "sample") badges.push('<span class="badge sample">샘플 데이터</span>');
   (S.alerts || []).forEach(function (a) {
+    if (DATA.control && /^STOP 파일/.test(a.message || "")) return;  // shown as the paused badge
     if (a.level === "warn" || a.level === "error") badges.push('<span class="badge stale" title="' + esc(a.message) + '">' + (a.level === "error" ? "오류 · " : "주의 · ") + esc(a.message) + "</span>");
   });
   badges.push('<span class="badge"><span class="dot"></span>' + esc(MODES[S.mode] || S.mode || "모의투자") + "</span>");
@@ -751,6 +805,114 @@ tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
     });
   });
   drawTrades();
+
+  // ---- in-app controls (served by the Mintory agent at 127.0.0.1) ----
+  var CTL = DATA.control;
+  if (CTL && /^https?:$/.test(location.protocol)) {
+    var ctlBox = $("controls"), btnRefresh = $("btn-refresh"), btnRun = $("btn-run"), btnPause = $("btn-pause");
+    var JOBS = { refresh: "새로고침 중…", run: "매매 실행 중…", auto: "자동 실행 중…" };
+    var LABELS = { refresh: "잔고 새로고침", run: "지금 매매 실행" };
+    var ICON_SPIN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M8 2.5a5.5 5.5 0 1 1-5.5 5.5"/></svg>';
+    var ICON_PLAY = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 2.8v10.4a.6.6 0 0 0 .92.5l8.1-5.2a.6.6 0 0 0 0-1L5.42 2.3a.6.6 0 0 0-.92.5z"/></svg>';
+    var ICON_PAUSE = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4" y="3" width="2.6" height="10" rx=".8"/><rect x="9.4" y="3" width="2.6" height="10" rx=".8"/></svg>';
+    var ICON_REFRESH = btnRefresh.querySelector("svg").outerHTML;
+    var wasBusy = !!CTL.busy, pollTimer = null;
+    ctlBox.hidden = false;
+
+    var toastTimer;
+    var toast = function (msg) {
+      var t = document.querySelector(".toast") || document.body.appendChild(document.createElement("div"));
+      t.className = "toast"; t.textContent = msg;
+      clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.remove(); }, 6000);
+    };
+    var api = function (path, body) {
+      return fetch(path, { method: body ? "POST" : "GET", cache: "no-store",
+        headers: body ? { "X-Mintory": "1", "Content-Type": "application/json" } : {},
+        body: body ? JSON.stringify(body) : undefined
+      }).then(function (r) { return r.json().then(function (j) { j._ok = r.ok; return j; }); });
+    };
+    var paint = function (c) {
+      var busy = c.busy;
+      btnRefresh.disabled = btnRun.disabled = !!busy;
+      if (c.paused) { btnRun.disabled = true; btnRun.title = "일시정지 중이라 실행할 수 없어요. 먼저 다시 시작을 눌러주세요."; }
+      else btnRun.title = "밤 11:45 자동 실행과 같은 작업을 지금 한 번 해요.";
+      [["refresh", btnRefresh, ICON_REFRESH], ["run", btnRun, ICON_PLAY]].forEach(function (b) {
+        var mine = busy === b[0] || (busy === "auto" && b[0] === "run");
+        b[1].classList.toggle("busy", mine);
+        b[1].innerHTML = (mine ? ICON_SPIN : b[2]) + "<span>" + (mine ? JOBS[busy] : LABELS[b[0]]) + "</span>";
+      });
+      btnPause.classList.toggle("on", !!c.paused);
+      btnPause.innerHTML = (c.paused ? ICON_PLAY : ICON_PAUSE) + "<span>" + (c.paused ? "다시 시작" : "일시정지") + "</span>";
+      btnPause.title = c.paused ? "누르면 다시 주문을 낼 수 있어요." : "누르면 그 뒤로 주문을 내지 않아요. 자동 실행도 멈춰요.";
+      var pb = document.getElementById("badge-paused");
+      if (c.paused && !pb) $("badges").insertAdjacentHTML("afterbegin", '<span class="badge paused" id="badge-paused">일시정지됨 · 주문 안 냄</span>');
+      if (!c.paused && pb) pb.remove();
+    };
+    var poll = function () {
+      clearTimeout(pollTimer);
+      api("/api/status").then(function (c) {
+        paint(c);
+        if (wasBusy && !c.busy) {
+          var lj = c.last_job || {};
+          if (lj.result && lj.result !== "ok") toast((JOBS[lj.name] || "작업").replace(" 중…", "") + "에 실패했어요. 자세한 내용은 paper/logs/agent.log에 있어요.");
+          setTimeout(function () { location.reload(); }, lj.result && lj.result !== "ok" ? 2500 : 0);
+          return;
+        }
+        wasBusy = !!c.busy;
+        pollTimer = setTimeout(poll, c.busy ? 2000 : 30000);
+      }).catch(function () { pollTimer = setTimeout(poll, 30000); });
+    };
+    var start = function (path) {
+      api(path, {}).then(function (c) {
+        if (!c._ok) { toast(c.error || "지금은 실행할 수 없어요."); return; }
+        wasBusy = true; paint(c); poll();
+      }).catch(function () { toast("자동 실행기에 연결하지 못했어요. Mintory를 다시 열어주세요."); });
+    };
+
+    // US market hours in New York time (holidays not counted).
+    var market = function () {
+      var parts = {};
+      new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+        .formatToParts(new Date()).forEach(function (p) { parts[p.type] = p.value; });
+      var mins = +parts.hour * 60 + +parts.minute;
+      var open = ["Sat", "Sun"].indexOf(parts.weekday) < 0 && mins >= 570 && mins < 960;
+      return { open: open, time: parts.hour + ":" + parts.minute };
+    };
+    var confirmRun = function () {
+      var m = market();
+      var back = document.createElement("div");
+      back.className = "modal-back";
+      back.innerHTML = '<div class="modal" role="dialog" aria-modal="true" aria-labelledby="m-title">' +
+        '<h3 id="m-title">지금 매매를 실행할까요?</h3>' +
+        "<p>밤 11시 45분 자동 실행과 같은 작업을 지금 한 번 해요. 리밸런싱할 때가 되었으면 키움 <b>모의계좌</b>로 주문이 나가고, 아니면 평가금액만 기록해요.</p>" +
+        '<div class="mkt"><i style="background:' + (m.open ? "#45d0b8" : "var(--warn)") + '"></i><span>' +
+        (m.open ? "지금 미국장이 열려 있어요 (뉴욕 " + m.time + ")"
+                : "지금 미국장이 닫혀 있어요 (뉴욕 " + m.time + "). 주문은 장이 열릴 때까지 체결되지 않아요.") + "</span></div>" +
+        '<div class="acts"><button type="button" class="ctl" data-act="no">취소</button><button type="button" class="ctl primary" data-act="yes">실행</button></div></div>';
+      document.body.appendChild(back);
+      var close = function () { back.remove(); document.removeEventListener("keydown", onKey); };
+      var onKey = function (e) { if (e.key === "Escape") close(); };
+      document.addEventListener("keydown", onKey);
+      back.addEventListener("click", function (e) {
+        var act = e.target.closest && e.target.closest("[data-act]");
+        if (e.target === back || (act && act.getAttribute("data-act") === "no")) close();
+        else if (act) { close(); start("/api/run"); }
+      });
+      back.querySelector('[data-act="no"]').focus();
+    };
+
+    btnRefresh.addEventListener("click", function () { start("/api/refresh"); });
+    btnRun.addEventListener("click", confirmRun);
+    btnPause.addEventListener("click", function () {
+      var next = !btnPause.classList.contains("on");
+      api("/api/pause", { paused: next }).then(function (c) {
+        paint(c);
+        toast(next ? "일시정지했어요. 다시 시작을 누를 때까지 주문을 내지 않아요." : "다시 시작했어요. 다음 자동 실행부터 주문을 낼 수 있어요.");
+      }).catch(function () { toast("자동 실행기에 연결하지 못했어요. Mintory를 다시 열어주세요."); });
+    });
+    paint(CTL);
+    poll();
+  }
 
   // 실제 기록을 보는 중이면 몇 분마다 새로 읽는다. 자동 실행이 HTML을 다시 만들면 바로 반영된다.
   if (META.source === "paper") setTimeout(function () { location.reload(); }, 5 * 60 * 1000);
