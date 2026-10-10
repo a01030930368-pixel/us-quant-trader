@@ -279,6 +279,27 @@ tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
 .modal .mkt i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 .modal .acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .modal .ctl { height: 36px; padding: 0 16px; font-size: 13.5px; }
+.ctl.mini { height: 26px; padding: 0 9px; font-size: 12px; gap: 5px; color: var(--sub); }
+.ctl.mini:hover { color: var(--fg); }
+.ctl.mini svg { width: 12px; height: 12px; }
+.modal.wide { width: min(1180px, 100%); max-height: calc(100vh - 32px); padding: 20px 22px 18px; grid-template-rows: auto minmax(0, 1fr) auto; }
+.modal .m-head { display: flex; align-items: baseline; gap: 12px; }
+.modal .m-head .sub { font-size: 13px; }
+.modal .m-head .x { margin-left: auto; }
+.modal .m-body { overflow: auto; margin: 0 -6px; }
+.detail { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.detail th, .detail td { padding: 11px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line-soft); }
+.detail th:first-child, .detail td:first-child { text-align: left; }
+.detail thead th { position: sticky; top: 0; background: var(--panel-2); color: var(--sub); font-size: 12px; font-weight: 600; cursor: pointer; user-select: none; }
+.detail thead th:hover { color: var(--fg); }
+.detail thead th.on { color: var(--fg); }
+.detail thead th.on::after { content: " ↓"; }
+.detail thead th.on.asc::after { content: " ↑"; }
+.detail td small { display: block; font-size: 11.5px; margin-top: 2px; }
+.detail tfoot td { font-weight: 700; border-bottom: 0; border-top: 1px solid var(--line); }
+.detail .bar { display: inline-block; width: 56px; height: 4px; border-radius: 2px; background: var(--panel); vertical-align: middle; margin-left: 8px; position: relative; overflow: hidden; }
+.detail .bar i { position: absolute; inset: 0 auto 0 0; background: var(--fg); opacity: 0.75; }
+.modal .m-foot { color: var(--dim); font-size: 12px; }
 .toast {
   position: fixed; right: 24px; bottom: 24px; z-index: 30; max-width: 360px;
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
@@ -409,7 +430,8 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       <section class="panel" aria-labelledby="hold-title">
         <div class="panel-head">
           <h2 id="hold-title">보유 종목</h2>
-          <div class="aside sub" id="hold-count"></div>
+          <div class="aside sub"><span id="hold-count"></span><button type="button" class="ctl mini" id="hold-more" hidden aria-label="보유 종목 자세히 보기">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.5h4v4M13.5 2.5 8.5 7.5M6.5 13.5h-4v-4M2.5 13.5l5-5"/></svg>자세히</button></div>
         </div>
         <div class="panel-body scroll">
           <div class="alloc">
@@ -752,7 +774,10 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
           '<td><div class="pr"><b class="' + tone(pnl) + '">' + pct(pr) + '</b><small class="' + tone(pnl) + '">' + usdSigned(pnl) + "</small></div></td></tr>";
       }).join("") + "</tbody>";
     }
+    $("hold-more").hidden = !positions.length;
+    if (detail) renderDetail();
   }
+  var detail = null, detailSort = { key: "value", asc: false };
   renderHoldings();
 
   // ---- rebalance ----
@@ -835,6 +860,92 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   });
   drawTrades();
 
+  // ---- holdings detail: every number per position in one sortable table ----
+  function tradeInfo(sym) {
+    var first = null, fee = 0;
+    TRADES.forEach(function (t) {
+      if (t.symbol !== sym || t.status === "rejected" || t.status === "cancelled") return;
+      fee += +t.fee || 0;
+      if (t.side === "buy" && (!first || String(t.time) < String(first.time))) first = t;
+    });
+    return { first: first, fee: fee };
+  }
+  var DETAIL_COLS = [
+    ["symbol", "종목"], ["qty", "수량"], ["avg", "평균단가"], ["px", "현재가"], ["cost", "매입금액"],
+    ["value", "평가금액"], ["weight", "비중 (목표)"], ["pnl", "손익"], ["day", "오늘 손익"], ["fee", "수수료"], ["since", "첫 매수"]
+  ];
+  function renderDetail() {
+    var total = invested + cash;
+    var rows = positions.map(function (p) {
+      var info = tradeInfo(p.symbol), pnl = p.value - p.cost;
+      return { p: p, symbol: p.symbol, qty: p.qty, avg: +p.avg_price, px: p.px, cost: p.cost, value: p.value,
+               weight: total ? p.value / total : 0, target: targetW[p.symbol], pnl: pnl, pr: p.cost ? pnl / p.cost : 0,
+               day: dayPnl(p), fee: info.fee, since: info.first ? String(info.first.time || info.first.date || "") : "" };
+    });
+    var k = detailSort.key, dir = detailSort.asc ? 1 : -1;
+    rows.sort(function (a, b) {
+      var x = a[k], y = b[k];
+      if (x == null) return 1;
+      if (y == null) return -1;
+      return (typeof x === "string" ? x.localeCompare(y) : x - y) * dir;
+    });
+    var sum = function (f) { return rows.reduce(function (a, r) { return a + (r[f] || 0); }, 0); };
+    var tCost = sum("cost"), tPnl = sum("pnl"), dayKnown = rows.some(function (r) { return r.day != null; });
+    var q = function (r) { return LIVE.on && LIVE.quotes[r.symbol]; };
+    detail.querySelector(".m-head .sub").textContent = rows.length + "종목 · 평가금액 " + usd(invested) + " · 현금 " + usd(cash);
+    detail.querySelector(".m-body").innerHTML = '<table class="detail"><thead><tr>' + DETAIL_COLS.map(function (c) {
+        return '<th data-k="' + c[0] + '" class="' + (c[0] === k ? "on" + (detailSort.asc ? " asc" : "") : "") + '">' + c[1] + "</th>";
+      }).join("") + "</tr></thead><tbody>" + rows.map(function (r) {
+        var sl = (targetSl[r.symbol] || (r.p.sleeve ? [r.p.sleeve] : [])).filter(function (v, i, a) { return v && a.indexOf(v) === i; });
+        return "<tr><td><div class=\"tk\">" + avatar(r.symbol) + '<div class="nm"><b>' + esc(r.symbol) +
+            sl.map(function (id) { return '<span class="tag">' + esc((sleeveName[id] || id).replace(" 바구니", "")) + "</span>"; }).join("") +
+            "</b><small>" + esc(NAMES[r.symbol] || "") + "</small></div></div></td>" +
+          "<td>" + r.qty.toLocaleString("en-US") + "주</td>" +
+          "<td>" + usd(r.avg) + "</td>" +
+          "<td>" + usd(r.px) + (q(r) && q(r).change != null ? '<small class="' + tone(q(r).change) + '">오늘 ' + pct(q(r).change) + "</small>" : "") + "</td>" +
+          "<td>" + usd(r.cost) + "</td>" +
+          "<td><b>" + usd(r.value) + "</b></td>" +
+          "<td>" + pct(r.weight, 1, true) + '<span class="bar"><i style="width:' + (r.weight * 100).toFixed(1) + '%"></i></span>' +
+            '<small class="sub">' + (r.target == null ? "목표 없음" : "목표 " + pct(r.target, 0, true)) + "</small></td>" +
+          '<td><b class="' + tone(r.pnl) + '">' + usdSigned(r.pnl) + '</b><small class="' + tone(r.pnl) + '">' + pct(r.pr) + "</small></td>" +
+          '<td class="' + tone(r.day) + '">' + (r.day == null ? '<span class="dim">—</span>' : usdSigned(r.day)) + "</td>" +
+          '<td class="sub">' + usd(r.fee) + "</td>" +
+          '<td class="sub">' + (r.since ? esc(r.since.slice(0, 10).replace(/-/g, ".")) : "—") + "</td></tr>";
+      }).join("") + "</tbody><tfoot><tr><td>합계</td><td></td><td></td><td></td>" +
+        "<td>" + usd(tCost) + "</td><td>" + usd(invested) + "</td><td>" + pct(total ? invested / total : 0, 1, true) + "</td>" +
+        '<td class="' + tone(tPnl) + '">' + usdSigned(tPnl) + "<small>" + pct(tCost ? tPnl / tCost : 0) + "</small></td>" +
+        '<td class="' + tone(sum("day")) + '">' + (dayKnown ? usdSigned(sum("day")) : "—") + "</td>" +
+        "<td>" + usd(sum("fee")) + "</td><td></td></tr></tfoot></table>";
+  }
+  function openDetail() {
+    var back = document.createElement("div");
+    back.className = "modal-back";
+    back.innerHTML = '<div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="d-title">' +
+      '<div class="m-head"><h3 id="d-title">보유 종목 자세히</h3><span class="sub"></span>' +
+      '<button type="button" class="ctl x" data-act="close">닫기</button></div>' +
+      '<div class="m-body"></div>' +
+      '<div class="m-foot">손익은 평균단가 기준이에요. 머리글을 누르면 그 항목으로 정렬돼요. ' +
+      (LIVE.on ? "현재가는 실시간으로 바뀌어요." : "현재가는 마지막 잔고 새로고침 기준이에요.") + "</div></div>";
+    document.body.appendChild(back);
+    detail = back;
+    renderDetail();
+    var close = function () { back.remove(); detail = null; document.removeEventListener("keydown", onKey); $("hold-more").focus(); };
+    var onKey = function (e) { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    back.addEventListener("click", function (e) {
+      var th = e.target.closest && e.target.closest("th[data-k]");
+      if (th) {
+        var key = th.getAttribute("data-k");
+        detailSort = { key: key, asc: detailSort.key === key ? !detailSort.asc : key === "symbol" || key === "since" };
+        return renderDetail();
+      }
+      var act = e.target.closest && e.target.closest("[data-act]");
+      if (e.target === back || act) close();
+    });
+    back.querySelector('[data-act="close"]').focus();
+  }
+  $("hold-more").addEventListener("click", openDetail);
+
   // ---- live quotes: holdings, KPIs and the chart's last point follow the market ----
   function sparkSvg(q) {
     var v = (q.spark || []).slice();
@@ -871,6 +982,14 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     });
     return { qty: qty, px: qty ? cost / qty : 0 };
   }
+  // Today's P&L of one position. Shares bought during this session earn today's move
+  // from their fill price, not from yesterday's close.
+  function dayPnl(p) {
+    var q = LIVE.on && LIVE.quotes[p.symbol];
+    if (!q || !q.prev_close) return null;
+    var b = boughtToday(p.symbol, q.session), fresh = Math.min(p.qty, b.qty);
+    return (p.qty - fresh) * (q.price - q.prev_close) + fresh * (q.price - b.px);
+  }
   var baseSeries = series.slice();
   function applyLive(res) {
     var Q = (res && res.quotes) || {};
@@ -889,10 +1008,9 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       var q = Q[p.symbol];
       if (!q) return;
       p.px = q.price; p.value = p.qty * q.price;
-      if (!q.prev_close) return;
-      // Shares bought during this session earn today's move from their fill price, not from yesterday's close.
-      var b = boughtToday(p.symbol, q.session), fresh = Math.min(p.qty, b.qty);
-      dAbs += (p.qty - fresh) * (q.price - q.prev_close) + fresh * (q.price - b.px);
+      var d = dayPnl(p);
+      if (d == null) return;
+      dAbs += d;
       known = true;
     });
     positions.sort(function (a, b) { return b.value - a.value; });
