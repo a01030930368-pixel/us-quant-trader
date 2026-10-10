@@ -23,7 +23,7 @@ from pathlib import Path
 import pandas as pd
 
 from quant.data import load_prices
-from quant.strategies import momentum_13612, momentum_rotation, tranched
+from quant.strategies import momentum_13612, momentum_blend, momentum_rotation, tranched
 
 KST = timezone(timedelta(hours=9))
 SAFE = "IEF"
@@ -58,6 +58,9 @@ class TraderConfig:
     # catches price/unit bugs; GLD sits in both sleeves, so one order can
     # legitimately be ~75% of the account (or 100% when everything goes to IEF).
     max_order_usd: float | None = None
+    # One-way cost the backtest comparison assumes. None = 25bp on the Kiwoom
+    # mock account (its fees run ~0.25%), 10bp elsewhere.
+    model_cost_bps: float | None = None
     # Skip the day's orders when the account fell more than this fraction since
     # the previous recorded close (e.g. 0.10 = 10%). None turns it off.
     max_daily_loss: float | None = 0.10
@@ -139,12 +142,7 @@ def _completed(close: pd.DataFrame, today: pd.Timestamp) -> pd.DataFrame:
     return px
 
 
-def staggered_targets(close: pd.DataFrame, today: pd.Timestamp,
-                      cfg: TraderConfig) -> tuple[list[dict], pd.Timestamp]:
-    """Target weights per sleeve for the canary/tranche strategy, as decided
-    by the latest finished session. Returns (rows, that session's date)."""
-    px = _completed(close, today)
-    last = close.index[close.index < today.normalize()][-1]
+def _tranche_params(cfg: TraderConfig) -> dict:
     stable, aggr = SLEEVES
     params = dict(strategy="canary_gate" if cfg.canary else "momentum_blend",
                   tranches=cfg.tranches, spacing=cfg.tranche_spacing,
@@ -152,6 +150,50 @@ def staggered_targets(close: pd.DataFrame, today: pd.Timestamp,
                   stable_assets=stable.universe, aggr_assets=aggr.universe, safe=SAFE)
     if cfg.canary:
         params["canary"] = list(cfg.canary)
+    return params
+
+
+def model_weights(close: pd.DataFrame, cfg: TraderConfig) -> pd.DataFrame:
+    """Daily target weights of the whole portfolio, as the backtest engine
+    computes them for this config (cash buffer included)."""
+    if cfg.staggered:
+        w = tranched(close, aggr_share=cfg.aggr_share, **_tranche_params(cfg))
+    else:
+        stable, aggr = SLEEVES
+        w = momentum_blend(close, aggr_share=cfg.aggr_share, lookback=cfg.lookback,
+                           lookbacks=list(cfg.lookbacks) or None, safe=SAFE,
+                           stable_assets=stable.universe, aggr_assets=aggr.universe)
+    return w.reindex(close.index).ffill().fillna(0.0) * (1 - cfg.cash_buffer)
+
+
+def shadow_backtest(close: pd.DataFrame, cfg: TraderConfig, rows: list[dict],
+                    cost_bps: float) -> dict | None:
+    """What the backtest says the account would be worth on each recorded day,
+    starting from the first recorded equity. Holdings decided at one close earn
+    the next session's return, minus `cost_bps` per unit of turnover."""
+    if not rows:
+        return None
+    d0, e0 = pd.Timestamp(rows[0]["date"]), float(rows[0]["equity"])
+    w = model_weights(close, cfg)
+    ret = close[w.columns].pct_change().fillna(0.0)
+    net = (w.shift(1).fillna(0.0) * ret).sum(axis=1) - w.diff().abs().sum(axis=1) * cost_bps / 10_000
+    value = e0 * (1 + net[net.index > d0]).cumprod()
+    series = {rows[0]["date"]: round(e0, 2)}
+    for r in rows[1:]:
+        d = pd.Timestamp(r["date"])
+        if d in value.index:
+            series[r["date"]] = round(float(value[d]), 2)
+    return {"from": rows[0]["date"], "cost_bps": cost_bps, "series": series}
+
+
+def staggered_targets(close: pd.DataFrame, today: pd.Timestamp,
+                      cfg: TraderConfig) -> tuple[list[dict], pd.Timestamp]:
+    """Target weights per sleeve for the canary/tranche strategy, as decided
+    by the latest finished session. Returns (rows, that session's date)."""
+    px = _completed(close, today)
+    last = close.index[close.index < today.normalize()][-1]
+    stable, aggr = SLEEVES
+    params = _tranche_params(cfg)
     rows = []
     # Sleeve weights are linear in aggr_share, so run each sleeve alone
     # (0 = stable only, 1 = aggressive only) to keep the sleeve labels.
@@ -474,8 +516,17 @@ class Runner:
                           "cash": round(cash, 2),
                           "benchmark_close": round(prices.get(BENCHMARK, float("nan")), 4)})
         self._write_atomic("meta.json", meta)
+        backtest = None
+        try:
+            cost = self.cfg.model_cost_bps
+            if cost is None:
+                cost = 25.0 if self.mode == "kiwoom_mock" else 10.0
+            backtest = shadow_backtest(close, self.cfg, self._equity_rows(), cost)
+        except Exception as e:  # noqa: BLE001 - the comparison must never stop a run
+            alerts.append({"level": "info", "message": f"백테스트 비교를 계산하지 못했습니다: {str(e)[:120]}"})
         return self._state(now, meta, alerts=alerts, positions=positions, cash=cash,
-                           prices=prices, targets=targets, scores=scores, sig=sig, canary=canary)
+                           prices=prices, targets=targets, scores=scores, sig=sig, canary=canary,
+                           backtest=backtest)
 
     def _extra_rules(self) -> list[str]:
         rules = []
@@ -488,8 +539,14 @@ class Runner:
                          f"0 이하면 그 덩어리는 전부 {SAFE}로 피합니다.")
         return rules
 
+    def _equity_rows(self) -> list[dict]:
+        p = self.dir / "equity.jsonl"
+        if not p.exists():
+            return []
+        return [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
+
     def _state(self, now, meta, alerts, positions=None, cash=None, prices=None,
-               targets=None, scores=None, sig=None, canary=None) -> dict:
+               targets=None, scores=None, sig=None, canary=None, backtest=None) -> dict:
         prices = prices or {}
         if positions is None:
             try:
@@ -533,5 +590,9 @@ class Runner:
         }
         if self.cfg.canary and canary is not None:
             state["signal"]["canary"] = canary
+        if backtest is None:  # early exits (pause, stale data) keep the last comparison
+            backtest = self._read("state.json").get("backtest")
+        if backtest:
+            state["backtest"] = backtest
         self._write_atomic("state.json", state)
         return state

@@ -253,8 +253,11 @@ def set_paused(paused: bool) -> None:
 
 
 def control_state() -> dict:
+    # Read the job before the state file: a job writes last_job first and only
+    # then clears its name, so "not busy" here always comes with its last_job.
+    busy, since = _job["name"], _job["started"]
     state = read_state()
-    return {"paused": STOP.exists(), "busy": _job["name"], "busy_since": _job["started"],
+    return {"paused": STOP.exists(), "busy": busy, "busy_since": since,
             "last_job": state.get("last_job"), "next_run": state.get("next_run")}
 
 
