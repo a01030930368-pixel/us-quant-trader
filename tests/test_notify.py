@@ -103,3 +103,16 @@ def test_weekly_message_first_week_uses_initial_capital():
     eq = [{"date": "2026-10-12", "equity": 99000.0}]
     text = notify.weekly_message("2026-10-16", {"initial_capital": 100000}, eq, [])
     assert "📉 이번 주 -1.00% (-$1,000.00)" in text and "매매 없음" in text
+
+
+def test_preview_message():
+    from quant.notify import preview_message
+    pv = {"order_date": "2026-10-15", "as_of": "2026-10-13",
+          "orders": [{"symbol": "UPRO", "side": "sell", "qty": 10, "value": 1000.0},
+                     {"symbol": "IEF", "side": "buy", "qty": 20, "value": 1900.5}]}
+    text = preview_message(pv)
+    assert text.startswith("📣 내일 밤 리밸런싱 예정") and "10/15(목) 23:45" in text
+    assert "🔵 매도 UPRO 10주 (약 $1,000.00)" in text and "🔴 매수 IEF 20주 (약 $1,900.50)" in text
+    assert "10/13(화) 장 마감 가격 기준" in text and "일시정지" not in text
+    assert "⏸" in preview_message(pv, paused=True)
+    assert preview_message({**pv, "orders": []}) is None

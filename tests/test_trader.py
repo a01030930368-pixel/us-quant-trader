@@ -499,3 +499,48 @@ def test_runner_writes_backtest_and_keeps_it_when_paused(tmp_path, close):
     (r.dir / "STOP").write_text("x")
     paused = r.run(close=close, now=datetime(2026, 10, 8, 15, tzinfo=timezone.utc))
     assert paused["backtest"] == st["backtest"]
+
+
+# -- next rebalance preview ----------------------------------------------------
+
+def test_preview_matches_what_the_order_day_would_trade(close):
+    from quant.trader.runner import next_rebalance, preview_rebalance, staggered_targets
+    px = canary_close(close)
+    cfg = TraderConfig(canary=("EEM",), tranches=4)
+    today = pd.Timestamp("2026-10-09")
+    pv = preview_rebalance(px, today, cfg, {}, 10_000.0, {})
+    assert pv["order_date"] == next_rebalance(today, cfg)["order_date"] == "2026-10-15"
+    assert pv["as_of"] == "2026-10-08"
+    # the same prices carried to the order day give the same targets
+    done = px[px.index < today]
+    days = pd.bdate_range(done.index[-1] + pd.offsets.BDay(1), pv["order_date"])
+    flat = pd.concat([done, pd.DataFrame([done.iloc[-1].values] * len(days), index=days, columns=done.columns)])
+    rows, _ = staggered_targets(flat, pd.Timestamp(pv["order_date"]), cfg)
+    want = {}
+    for t in rows:
+        want[t["symbol"]] = want.get(t["symbol"], 0.0) + t["weight"]
+    assert pv["weights"] == pytest.approx(want, abs=1e-4)
+    assert {o["symbol"] for o in pv["orders"]} == set(pv["weights"])
+    assert all(o["side"] == "buy" for o in pv["orders"])
+    # holding exactly the target means nothing to trade
+    price = {t: float(done[t].iloc[-1]) for t in done.columns}
+    hold = {t: {"qty": int(10_000 * 0.98 * w // price[t]), "avg_price": price[t]} for t, w in want.items()}
+    cash = 10_000 - sum(h["qty"] * price[t] for t, h in hold.items())
+    assert preview_rebalance(px, today, cfg, hold, cash, price)["orders"] == []
+
+
+def test_preview_on_order_day_shows_the_next_one(close):
+    from quant.trader.runner import next_rebalance, preview_rebalance
+    cfg = TraderConfig(canary=("EEM",), tranches=4)
+    px = canary_close(close)
+    day = pd.Timestamp(next_rebalance(pd.Timestamp("2026-09-28"), cfg)["order_date"])
+    pv = preview_rebalance(px.loc[:day], day, cfg, {}, 10_000.0, {})
+    assert pv["order_date"] > str(day.date())
+
+
+def test_runner_writes_preview(tmp_path, close):
+    r = make_runner(tmp_path)
+    st = r.run(close=close, now=datetime(2026, 10, 8, 15, tzinfo=timezone.utc))
+    assert st["preview"]["order_date"] and "orders" in st["preview"]
+    (r.dir / "STOP").write_text("x")
+    assert r.run(close=close, now=datetime(2026, 10, 8, 16, tzinfo=timezone.utc))["preview"] == st["preview"]

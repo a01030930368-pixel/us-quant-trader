@@ -233,6 +233,14 @@ tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
 .step { background: var(--panel-2); border-radius: 10px; padding: 10px 12px; display: grid; gap: 2px; }
 .step .k { font-size: 12px; color: var(--sub); }
 .step b { font-size: 13.5px; font-weight: 600; }
+.pv { margin-top: 10px; background: var(--panel-2); border-radius: 10px; padding: 10px 12px; }
+.pv-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--sub); margin-bottom: 6px; }
+.pv-row { display: flex; justify-content: space-between; gap: 8px; font-size: 13.5px; padding: 3px 0; }
+.pv-row .side { font-weight: 600; margin-right: 6px; }
+.pv-row .buy { color: var(--up); }
+.pv-row .sell { color: var(--down); }
+.pv-row small { color: var(--sub); }
+.pv-none { font-size: 13px; color: var(--sub); }
 .signal { padding-top: 14px; display: grid; gap: 14px; }
 .signal-head { font-size: 12.5px; color: var(--sub); }
 .sleeve { display: grid; gap: 5px; }
@@ -841,6 +849,17 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   renderHoldings();
 
   // ---- rebalance ----
+  // 다음 리밸런싱 미리보기: 지금 가격이 신호일까지 그대로라면 나갈 주문 (runner.preview_rebalance)
+  function previewHtml(pv) {
+    if (!pv || !pv.order_date || parseDate(pv.order_date) < today()) return "";
+    var head = '<div class="pv-head"><span>' + md(pv.order_date) + " 예상 주문</span><span>" + md(pv.as_of) + " 종가 기준</span></div>";
+    var orders = pv.orders || [];
+    if (!orders.length) return '<div class="pv">' + head + '<div class="pv-none">지금 가격이면 바뀌는 종목이 없어요.</div></div>';
+    return '<div class="pv">' + head + orders.map(function (o) {
+      return '<div class="pv-row"><span><span class="side ' + (o.side === "buy" ? "buy" : "sell") + '">' + (o.side === "buy" ? "매수" : "매도") + "</span>" +
+        esc(o.symbol) + " " + Number(o.qty).toLocaleString("en-US") + "주</span><small>약 " + usd(o.value) + "</small></div>";
+    }).join("") + '<div class="pv-none" style="margin-top:4px">신호일 장 마감 가격으로 다시 계산하니 수량은 달라질 수 있어요.</div></div>';
+  }
   var reb = [];
   if (nextDate) {
     var start = S.last_rebalance ? parseDate(S.last_rebalance) : null, end = parseDate(nextDate);
@@ -851,7 +870,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       '<div class="steps">' +
       (nextR.signal_date ? '<div class="step"><span class="k">신호 계산</span><b>' + md(nextR.signal_date) + " (" + wk(nextR.signal_date) + ") 장 마감 후</b></div>" : "") +
       (nextR.order_date ? '<div class="step"><span class="k">주문 실행</span><b>' + md(nextR.order_date) + " (" + wk(nextR.order_date) + ") 개장 직후</b></div>" : "") +
-      "</div></div>");
+      "</div>" + previewHtml(S.preview) + "</div>");
   } else {
     reb.push('<div class="next sub">다음 일정이 아직 기록되지 않았어요.</div>');
   }

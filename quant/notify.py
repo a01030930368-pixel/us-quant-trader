@@ -40,7 +40,8 @@ def settings(path: Path = ENV) -> dict:
     env = read_env(path)
     return {"token": env.get("TELEGRAM_BOT_TOKEN", ""), "chat_id": env.get("TELEGRAM_CHAT_ID", ""),
             "daily": env.get("NOTIFY_DAILY", "1") != "0",
-            "weekly": env.get("NOTIFY_WEEKLY", "1") != "0"}
+            "weekly": env.get("NOTIFY_WEEKLY", "1") != "0",
+            "preview": env.get("NOTIFY_PREVIEW", "1") != "0"}
 
 
 def configured(path: Path = ENV) -> bool:
@@ -182,11 +183,42 @@ def weekly_message(week_end: str, state: dict, equity: list[dict], trades: list[
     order_day = (state.get("next_rebalance") or {}).get("order_date")
     if order_day:
         nxt.append(f"· 리밸런싱 주문일 {_md(order_day)}")
+    pv = state.get("preview") or {}
+    if pv.get("order_date") == order_day and pv.get("orders") is not None:
+        nxt.append(f"· 지금 가격이면 예상 주문 {len(pv['orders'])}건" if pv["orders"] else "· 지금 가격이면 바뀌는 종목 없음")
     if any(str(a.get("message", "")).startswith("STOP 파일") for a in state.get("alerts") or []):
         nxt.append("· ⏸ 일시정지 중이라 주문하지 않아요")
     if nxt:
         blocks.append("🗓 다음 주\n" + "\n".join(nxt))
     return "\n\n".join(blocks)
+
+
+def preview_message(preview: dict, paused: bool = False) -> str | None:
+    """Heads-up the night before a rebalance: the orders it would place at today's prices."""
+    orders = preview.get("orders") or []
+    if not orders:
+        return None
+    lines = [f"{SIDE_ICON.get(o['side'], '·')} {SIDE.get(o['side'], o['side'])} {o['symbol']} {o['qty']}주 "
+             f"(약 {_usd(float(o['value']))})" for o in orders]
+    blocks = [f"📣 내일 밤 리밸런싱 예정\n🗓 {_md(preview['order_date'])} 23:45 자동 실행",
+              "🛒 예상 주문\n" + "\n".join(lines),
+              (f"💡 {_md(preview['as_of'])} 장 마감 가격 기준 예상이에요. 오늘 밤 미국장 마감 가격으로 "
+               "다시 계산하니 수량은 조금 달라질 수 있어요.")]
+    if paused:
+        blocks.append("⏸ 지금 일시정지 중이라 이대로면 주문하지 않아요. /resume 으로 재개")
+    return "\n\n".join(blocks)
+
+
+def notify_preview(paper: Path, path: Path = ENV) -> bool:
+    """Send the night-before heads-up from paper/state.json. Never raises."""
+    try:
+        if not configured(path) or not settings(path)["preview"]:
+            return False
+        state = json.loads((paper / "state.json").read_text(encoding="utf-8-sig"))
+        text = preview_message(state.get("preview") or {}, (paper / "STOP").exists())
+        return send(text, path) if text else False
+    except Exception:  # noqa: BLE001 - a notification must never break the agent
+        return False
 
 
 def notify_weekly(week_end: str, paper: Path, path: Path = ENV) -> bool:

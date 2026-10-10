@@ -34,7 +34,7 @@ import sys
 import threading
 import time
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -183,6 +183,25 @@ def make_backup(day: str) -> None:
     if saved:
         log("기록 백업: " + ", ".join(str(p) for p in saved))
     update_state(backup_day=day, backup_files=[str(p) for p in saved])
+
+
+def preview_due(day: str, preview: dict | None, sent: str | None) -> str | None:
+    """The order date to warn about when the rebalance is the next weekday after `day`."""
+    order = (preview or {}).get("order_date")
+    nxt = date.fromisoformat(day) + timedelta(days=1)
+    while nxt.weekday() >= 5:
+        nxt += timedelta(days=1)
+    return order if order == nxt.isoformat() and order != sent else None
+
+
+def send_preview(day: str) -> None:
+    """After the nightly run: tell the phone what tomorrow's rebalance will trade."""
+    from quant import notify
+    order = preview_due(day, _read_json(PAPER / "state.json").get("preview"), read_state().get("preview_sent"))
+    if order:
+        if notify.notify_preview(PAPER):
+            log(f"리밸런싱 미리 알림 보냄 ({order} 주문)")
+        update_state(preview_sent=order)
 
 
 def now_iso() -> str:
@@ -438,6 +457,7 @@ def loop(restarted: bool = False) -> None:
                 result = _run_job("auto")
             update_state(last_day=session_day(now), last_run=now.isoformat(timespec="seconds"),
                          last_result=result)
+            send_preview(session_day(now))
             state = read_state()
         week = weekly_due(now, state.get("weekly_sent"))
         if week:

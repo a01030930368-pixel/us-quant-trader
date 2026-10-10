@@ -235,3 +235,25 @@ def test_make_backup_records_state(tmp_path, monkeypatch):
     agent.make_backup("2026-10-13")
     assert (tmp_path / "backups" / "paper-2026-10-13.zip").exists()
     assert agent.read_state()["backup_day"] == "2026-10-13"
+
+
+def test_preview_due():
+    pv = {"order_date": "2026-10-15"}
+    assert agent.preview_due("2026-10-14", pv, None) == "2026-10-15"
+    assert agent.preview_due("2026-10-14", pv, "2026-10-15") is None          # sent already
+    assert agent.preview_due("2026-10-13", pv, None) is None                  # two days ahead
+    assert agent.preview_due("2026-10-16", {"order_date": "2026-10-19"}, None) == "2026-10-19"  # Fri -> Mon
+    assert agent.preview_due("2026-10-14", None, None) is None
+
+
+def test_send_preview_once(tmp_path, monkeypatch):
+    from quant import notify
+    monkeypatch.setattr(agent, "STATE", tmp_path / "agent.json")
+    monkeypatch.setattr(agent, "LOG", tmp_path / "agent.log")
+    monkeypatch.setattr(agent, "PAPER", tmp_path)
+    (tmp_path / "state.json").write_text(json.dumps({"preview": {"order_date": "2026-10-15"}}))
+    sent = []
+    monkeypatch.setattr(notify, "notify_preview", lambda paper: sent.append(paper) or True)
+    agent.send_preview("2026-10-14")
+    agent.send_preview("2026-10-14")
+    assert sent == [tmp_path] and agent.read_state()["preview_sent"] == "2026-10-15"
