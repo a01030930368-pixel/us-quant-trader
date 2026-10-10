@@ -14,6 +14,8 @@ import subprocess
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from quant import performance
+
 MIN_DAYS = 20          # trading days of paper records before going live
 MAX_GAP = 0.03         # |paper - backtest| cumulative gap that is still fine
 LIVE_KEYS = ("KIWOOM_LIVE_APP_KEY", "KIWOOM_LIVE_SECRET_KEY")
@@ -78,8 +80,9 @@ def checklist(paper: Path, env: dict, agent: dict | None = None, today: date | N
     # Same basis as the dashboard: both measured from the starting capital.
     base = float(state.get("initial_capital") or 0) or (float(equity[0]["equity"]) if equity else 0)
     if equity and base and series.get(equity[-1]["date"]):
-        real = float(equity[-1]["equity"]) / base - 1
-        model = float(series[equity[-1]["date"]]) / base - 1
+        # Deposits and withdrawals are left out on both sides (time-weighted).
+        real = performance.growth(equity, base)[-1] - 1
+        model = performance.model_growth(series, equity, base).get(equity[-1]["date"], real + 1) - 1
         gap = real - model
         out.append(item("gap", "백테스트와의 차이", "ok" if abs(gap) <= MAX_GAP else "warn",
                         f"실제 {real * 100:+.2f}% · 백테스트 {model * 100:+.2f}% · 차이 {gap * 100:+.2f}%p "

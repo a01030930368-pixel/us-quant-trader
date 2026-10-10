@@ -79,6 +79,9 @@ class TraderConfig:
     # the previous recorded close (e.g. 0.10 = 10%). None turns it off.
     max_daily_loss: float | None = 0.10
     min_trade_usd: float = 50.0        # skip tiny rebalancing trades
+    # Invest idle cash (a deposit, sale leftovers) once it exceeds this share of
+    # the account, buying toward the current targets without selling anything.
+    idle_cash_pct: float = 0.02
     max_data_age_days: int = 5         # refuse to trade on stale prices
     state_dir: Path = Path("paper")
     # Canary + tranches (strategy thread, 2026-10-10). Empty canary and one
@@ -191,12 +194,17 @@ def shadow_backtest(close: pd.DataFrame, cfg: TraderConfig, rows: list[dict],
     w = model_weights(close, cfg)
     ret = close[w.columns].pct_change().fillna(0.0)
     net = (w.shift(1).fillna(0.0) * ret).sum(axis=1) - w.diff().abs().sum(axis=1) * cost_bps / 10_000
-    value = e0 * (1 + net[net.index > d0]).cumprod()
+    growth = (1 + net[net.index > d0]).cumprod()
+    # Deposits and withdrawals (row "flow") go into the model account on the same day.
     series = {rows[0]["date"]: round(e0, 2)}
+    v, g_prev = e0, 1.0
     for r in rows[1:]:
         d = pd.Timestamp(r["date"])
-        if d in value.index:
-            series[r["date"]] = round(float(value[d]), 2)
+        if d in growth.index:
+            g = float(growth[d])
+            v = v * g / g_prev + float(r.get("flow") or 0)
+            g_prev = g
+            series[r["date"]] = round(v, 2)
     return {"from": rows[0]["date"], "cost_bps": cost_bps, "series": series}
 
 
@@ -299,9 +307,12 @@ def preview_rebalance(close: pd.DataFrame, today: pd.Timestamp, cfg: TraderConfi
 
 
 def plan_orders(weights: dict[str, float], prices: dict[str, float],
-                positions: dict[str, dict], cash: float, cfg: TraderConfig) -> list[dict]:
+                positions: dict[str, dict], cash: float, cfg: TraderConfig,
+                reserve: float = 0.0) -> list[dict]:
+    """Orders that bring holdings to `weights`. `reserve` dollars (money set
+    aside for a withdrawal) are kept in cash and not invested."""
     equity = cash + sum(p["qty"] * prices[t] for t, p in positions.items())
-    investable = equity * (1 - cfg.cash_buffer)
+    investable = max(0.0, equity - reserve) * (1 - cfg.cash_buffer)
     orders = []
     for t in sorted(set(weights) | set(positions)):
         target = math.floor(investable * weights.get(t, 0.0) / prices[t])
@@ -311,6 +322,18 @@ def plan_orders(weights: dict[str, float], prices: dict[str, float],
         orders.append({"symbol": t, "side": "buy" if diff > 0 else "sell",
                        "qty": abs(diff), "ref_price": prices[t], "value": abs(diff) * prices[t]})
     return sorted(orders, key=lambda o: o["side"] != "sell")  # sells fund buys
+
+
+def buy_only(orders: list[dict], budget: float, min_trade: float = 0.0) -> list[dict]:
+    """The buys of `orders`, shrunk so they fit in `budget` dollars (biggest first)."""
+    out = []
+    for o in sorted((o for o in orders if o["side"] == "buy"), key=lambda o: -o["value"]):
+        qty = min(o["qty"], math.floor(budget / o["ref_price"]))
+        if qty <= 0 or qty * o["ref_price"] < min_trade:
+            continue
+        out.append({**o, "qty": qty, "value": qty * o["ref_price"]})
+        budget -= qty * o["ref_price"]
+    return out
 
 
 class Runner:
@@ -412,6 +435,110 @@ class Runner:
         tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
         os.replace(tmp, p)
 
+    # -- deposits, withdrawals and money set aside for a withdrawal ------------
+    WITHDRAW = "withdraw.json"
+
+    def _pending_orders(self) -> bool:
+        p = self.dir / "trades.jsonl"
+        if not p.exists():
+            return False
+        return any(json.loads(x).get("status") in ("pending", "partial")
+                   for x in p.read_text(encoding="utf-8").splitlines() if x.strip())
+
+    def _detect_flow(self, meta: dict, positions: dict, cash: float, prices: dict) -> float:
+        """Dollars deposited (+) or withdrawn (-) since the last run, or 0.
+
+        The last run left the cash and share counts it saw in meta["seen"].
+        Cash should have moved only by what the shares bought or sold since then
+        (valued at the latest prices, fees ignored); a bigger difference is money
+        moved in or out (a deposit, a KRW->USD exchange, a withdrawal). Skipped
+        while an order is still unfilled, because the broker may already hold
+        its cash back."""
+        seen = meta.get("seen")
+        if not seen or self._pending_orders():
+            return 0.0
+        before = seen.get("qty") or {}
+        traded = 0.0
+        expected = float(seen.get("cash", 0.0))
+        for sym in set(before) | set(positions):
+            d = positions.get(sym, {}).get("qty", 0) - before.get(sym, 0)
+            if d:
+                px = prices.get(sym) or positions.get(sym, {}).get("avg_price") or 0.0
+                expected -= d * px
+                traded += abs(d) * px
+        equity = cash + sum(p["qty"] * prices.get(s, 0.0) for s, p in positions.items())
+        delta = cash - expected
+        # Dividends, fees and fill-vs-close differences stay under this.
+        if abs(delta) < max(100.0, 0.005 * equity, 0.03 * traded):
+            return 0.0
+        return round(delta, 2)
+
+    def withdraw_request(self) -> dict | None:
+        try:
+            req = self._read(self.WITHDRAW)
+        except (OSError, ValueError):
+            return None
+        return req if float(req.get("left_usd") or 0) > 0 else None
+
+    def _record_flow(self, amount: float, now: datetime, row_date: str, cash: float, alerts: list) -> None:
+        kind = "deposit" if amount > 0 else "withdraw"
+        rec = {"time": now.isoformat(timespec="seconds"), "date": row_date, "amount": amount, "kind": kind,
+               "cash_after": round(cash, 2), **({"fx": self.fx} if self.fx else {})}
+        self._append("flows.jsonl", rec)
+        won = f" (약 ₩{round(abs(amount) * self.fx):,})" if self.fx else ""
+        alerts.append({"level": "info", "message":
+                       f"{'입금' if amount > 0 else '출금'} 확인: ${abs(amount):,.2f}{won}"})
+        req = self.withdraw_request()
+        if amount > 0:
+            text = (f"💵 입금 확인 · Mintory\n\n➕ ${amount:,.2f}{won}\n\n"
+                    "💡 다음 실행 때 목표 비중대로 투자해요. 입금한 돈은 수익률에 들어가지 않아요.")
+        else:
+            text = f"🏧 출금 확인 · Mintory\n\n➖ ${-amount:,.2f}{won}"
+            if req:
+                left = round(float(req["left_usd"]) + amount, 2)
+                if left <= max(20.0, 0.02 * float(req.get("amount_usd") or 0)):
+                    (self.dir / self.WITHDRAW).unlink(missing_ok=True)
+                    text += "\n\n✅ 요청하신 출금이 끝났어요. 남은 돈으로 같은 전략을 계속 이어가요."
+                else:
+                    self._write_atomic(self.WITHDRAW, {**req, "left_usd": left})
+                    text += f"\n\n⏳ 빼 둔 돈 중 ${left:,.2f}가 아직 계좌에 있어요."
+            text += "\n\n💡 출금한 돈은 손실로 치지 않아요. 수익률은 그대로 이어져요."
+        self._tell(text)
+
+    def _tell(self, text: str) -> None:
+        if not self.notify:
+            return
+        try:
+            self.notify(text)
+        except Exception:  # noqa: BLE001 - an alert must never stop or crash trading
+            pass
+
+    def _withdraw_ready(self, cash: float, paused: bool) -> dict | None:
+        """Status of the withdrawal request for state.json; tells the phone once
+        when the money is set aside in cash."""
+        req = self.withdraw_request()
+        if not req:
+            return None
+        left = float(req["left_usd"])
+        ready = cash >= left - 1.0
+        if ready and not req.get("ready_notified"):
+            won = f" (약 ₩{round(left * self.fx):,})" if self.fx else ""
+            self._tell(f"💵 출금 준비 완료 · Mintory\n\n${left:,.2f}{won}를 현금으로 빼 뒀어요.\n\n"
+                       "👉 키움 앱(영웅문)에서 달러를 원화로 환전한 뒤 출금하세요. "
+                       "출금이 확인되면 다시 알려 드려요.")
+            req = {**req, "ready_notified": True}
+            self._write_atomic(self.WITHDRAW, req)
+        return {**req, "ready": ready, "paused": paused and not ready}
+
+    def _money_in(self, meta: dict) -> dict:
+        """principal (starting capital + deposits - withdrawals) and the totals."""
+        rows = self._equity_rows()
+        dep = sum(float(r["flow"]) for r in rows if float(r.get("flow") or 0) > 0)
+        wd = -sum(float(r["flow"]) for r in rows if float(r.get("flow") or 0) < 0)
+        start = float(meta.get("initial_capital", self.cfg.initial_capital))
+        return {"principal": round(start + dep - wd, 2),
+                "flows": {"deposits": round(dep, 2), "withdrawals": round(wd, 2)}}
+
     def _switch_strategy(self, meta: dict, today: pd.Timestamp) -> dict:
         """When the configured strategy differs from the one that wrote the
         records, move the old trades/equity/meta into archive/<old id>_<date>/
@@ -424,14 +551,20 @@ class Runner:
             return meta
         dest = self.dir / "archive" / f"{old}_{today.date()}"
         dest.mkdir(parents=True, exist_ok=True)
-        for name in ("trades.jsonl", "equity.jsonl", "meta.json"):
+        for name in ("trades.jsonl", "equity.jsonl", "meta.json", "flows.jsonl"):
             if (self.dir / name).exists():
                 os.replace(self.dir / name, dest / name)
         return {}
 
-    def _equity_row(self, rec: dict) -> None:
+    def _equity_row(self, rec: dict, flow: float = 0.0) -> None:
+        """Write the day's row (replacing an earlier one for the same date, whose
+        deposits/withdrawals in `flow` are kept and added to)."""
         p = self.dir / "equity.jsonl"
-        rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
+        rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()] if p.exists() else []
+        old = next((r for r in rows if r["date"] == rec["date"]), {})
+        total = float(old.get("flow") or 0) + flow
+        if abs(total) >= 0.005:
+            rec["flow"] = round(total, 2)
         rows = [r for r in rows if r["date"] != rec["date"]] + [rec]
         rows.sort(key=lambda r: r["date"])
         tmp = self.dir / ".equity.jsonl.tmp"
@@ -447,7 +580,7 @@ class Runner:
         rows = [r for r in rows if r.get("date", "") < before and r.get("equity")]
         return float(rows[-1]["equity"]) if rows else None
 
-    def _guard(self, orders: list[dict], equity: float, last_date: str) -> str | None:
+    def _guard(self, orders: list[dict], equity: float, last_date: str, flow: float = 0.0) -> str | None:
         """Why this batch must not go out, or None. Checked before every order run."""
         live = self.mode in self.LIVE_MODES
         if live and not self.cfg.max_order_usd:
@@ -458,6 +591,7 @@ class Runner:
             return (f"주문 한도 초과로 차단: {too_big[0]['symbol']} ${too_big[0]['value']:,.0f}"
                     f" (한도 ${limit:,.0f})")
         prev = self._prev_equity(last_date)
+        equity -= flow  # a deposit is not a gain, a withdrawal not a loss
         if self.cfg.max_daily_loss and prev and equity / prev - 1 <= -self.cfg.max_daily_loss:
             return (f"하루 손실 한도 초과로 오늘은 주문하지 않았습니다: 전날 ${prev:,.0f} → 지금 "
                     f"${equity:,.0f} ({(equity / prev - 1) * 100:+.1f}%, 한도 "
@@ -531,6 +665,9 @@ class Runner:
                                prices=prices, targets=targets, scores=scores, sig=sig, canary=canary, parts=parts)
         self._reconcile(positions)
         self._settle_fees(meta, cash)
+        flow = self._detect_flow(meta, positions, cash, prices)
+        if flow:
+            self._record_flow(flow, now, str(last.date()), cash, alerts)
         if execute:  # a --check run must not move or re-label the records
             meta = self._switch_strategy(meta, today)
             meta.setdefault("strategy_id", self.cfg.strategy_id)
@@ -543,14 +680,30 @@ class Runner:
             # Tranches change on their own days; trade whenever the target
             # differs from the one last executed.
             wanted = {k: round(v, 4) for k, v in sorted(weights.items())}
-            due = meta.get("last_weights") != wanted
+            rebalance = meta.get("last_weights") != wanted
         else:
-            due = sig is not None and meta.get("last_signal") != str(sig.date())
+            rebalance = sig is not None and meta.get("last_signal") != str(sig.date())
+
+        # Besides the strategy's own rebalance days: free up cash for a requested
+        # withdrawal, or put idle cash (e.g. a deposit) to work by buying only.
+        req = self.withdraw_request()
+        reserve = float(req["left_usd"]) if req else 0.0
+        equity = cash + sum(p["qty"] * prices.get(s, 0.0) for s, p in positions.items())
+        waiting = self._pending_orders()  # unfilled orders may already hold cash back
+        raise_cash = reserve > 0 and cash < reserve - 1.0 and not waiting
+        idle = cash - reserve - equity * self.cfg.cash_buffer
+        invest_idle = bool(weights) and not waiting and idle > max(self.cfg.idle_cash_pct * equity, self.cfg.min_trade_usd)
+        due = rebalance or raise_cash or invest_idle
+        note = ("분할 리밸런싱" if self.cfg.staggered else "월간 리밸런싱") if rebalance else \
+            "출금 준비" if raise_cash else "남는 현금 투자"
 
         if due:
-            orders = plan_orders(weights, prices, positions, cash, self.cfg)
-            equity = cash + sum(p["qty"] * prices.get(s, 0.0) for s, p in positions.items())
-            blocked = self._guard(orders, equity, str(last.date())) if orders else None
+            orders = plan_orders(weights, prices, positions, cash, self.cfg, reserve=reserve)
+            if not (rebalance or raise_cash):
+                orders = buy_only(orders, idle, self.cfg.min_trade_usd)
+            today_flow = flow + sum(float(r.get("flow") or 0) for r in self._equity_rows()
+                                    if r.get("date") == str(last.date()))
+            blocked = self._guard(orders, equity, str(last.date()), today_flow) if orders else None
             if blocked:
                 alerts.append({"level": "error", "message": blocked})
             elif paused:
@@ -576,7 +729,7 @@ class Runner:
                            "status": res.get("status", "filled" if ok else "rejected"),
                            "order_id": res.get("order_no"),
                            "sleeve": sleeve_of.get(o["symbol"]),
-                           "note": "분할 리밸런싱" if self.cfg.staggered else "월간 리밸런싱",
+                           "note": note,
                            **({"fx": self.fx} if self.fx else {}),
                            "held_before": positions.get(o["symbol"], {}).get("qty", 0)}
                     if not ok:
@@ -587,7 +740,7 @@ class Runner:
                                           if rec["status"] == "pending" else "주문이 거부되었습니다")
                                        + f" ({res.get('msg', '')})"})
                     self._append("trades.jsonl", rec)
-                if all_ok:
+                if all_ok and rebalance:
                     meta["last_signal"] = str(sig.date())
                     meta["last_rebalance"] = str(today.date())
                     if self.cfg.staggered:
@@ -600,7 +753,11 @@ class Runner:
         self._equity_row({"date": str(last.date()), "equity": round(equity, 2),
                           "cash": round(cash, 2),
                           "benchmark_close": round(prices.get(BENCHMARK, float("nan")), 4),
-                          **({"usdkrw": self.fx} if self.fx else {})})
+                          **({"usdkrw": self.fx} if self.fx else {})}, flow=flow)
+        if not self._pending_orders():  # the baseline for spotting the next deposit or withdrawal
+            meta["seen"] = {"time": now.isoformat(timespec="seconds"), "cash": round(cash, 2),
+                            "qty": {s: p["qty"] for s, p in positions.items() if p["qty"]}}
+        withdraw = self._withdraw_ready(cash, paused)
         self._write_atomic("meta.json", meta)
         preview = None
         try:
@@ -617,7 +774,7 @@ class Runner:
             alerts.append({"level": "info", "message": f"백테스트 비교를 계산하지 못했습니다: {str(e)[:120]}"})
         return self._state(now, meta, alerts=alerts, positions=positions, cash=cash,
                            prices=prices, targets=targets, scores=scores, sig=sig, canary=canary, parts=parts,
-                           backtest=backtest, preview=preview)
+                           backtest=backtest, preview=preview, withdraw=withdraw)
 
     def _extra_rules(self) -> list[str]:
         rules = []
@@ -638,7 +795,7 @@ class Runner:
 
     def _state(self, now, meta, alerts, positions=None, cash=None, prices=None,
                targets=None, scores=None, sig=None, canary=None, backtest=None, preview=None,
-               parts=None) -> dict:
+               parts=None, withdraw=None) -> dict:
         prices = prices or {}
         if positions is None:
             try:
@@ -666,6 +823,7 @@ class Runner:
             "benchmark": BENCHMARK,
             "started_at": meta.get("started_at"),
             "initial_capital": round(meta.get("initial_capital", self.cfg.initial_capital), 2),
+            **self._money_in(meta),
             "benchmark_start": meta.get("benchmark_start"),
             "updated_at": now.isoformat(timespec="seconds"),
             "cash": round(cash, 2) if cash is not None else None,
@@ -700,5 +858,9 @@ class Runner:
             preview = self._read("state.json").get("preview")
         if preview:
             state["preview"] = preview
+        if withdraw is None:
+            withdraw = self.withdraw_request()
+        if withdraw:
+            state["withdraw"] = withdraw
         self._write_atomic("state.json", state)
         return state

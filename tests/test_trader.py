@@ -680,3 +680,76 @@ def test_tranche_detail_adds_up_to_the_targets(close):
     assert total == pytest.approx(want, abs=1e-3)
     nxt = next_rebalance(today, cfg)
     assert nxt["tranches"] == 4 and 1 <= nxt["tranche"] <= 4
+
+
+# -- deposits, withdrawals, idle cash ---------------------------------------------
+def _flows(r):
+    p = r.dir / "flows.jsonl"
+    return [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
+
+
+def test_deposit_is_recorded_invested_and_not_counted_as_gain(tmp_path, close):
+    from quant import performance
+    sent = []
+    r = make_runner(tmp_path)
+    r.notify = sent.append
+    now = datetime(2026, 10, 8, 14, tzinfo=timezone.utc)
+    r.run(close=close, now=now)
+    before = len(trades(r))
+    r.broker.acct["cash"] += 5_000.0          # the user deposits (or exchanges won into) $5,000
+    r.broker._save()
+    s = r.run(close=close, now=now)
+    assert [f["amount"] for f in _flows(r)] == [5000.0] and _flows(r)[0]["kind"] == "deposit"
+    assert s["principal"] == pytest.approx(s["initial_capital"] + 5000) and s["flows"]["deposits"] == 5000
+    assert any("입금" in t for t in sent)
+    new = trades(r)[before:]
+    assert new and all(t["side"] == "buy" and t["note"] == "남는 현금 투자" for t in new)
+    assert s["cash"] < 0.3 * 5000          # most of the deposit went in (whole shares up to ~$1,100)
+    rows = [json.loads(x) for x in (r.dir / "equity.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["flow"] == 5000.0
+    assert abs(performance.total_return(rows, s["initial_capital"])) < 0.01   # fees only, not +50%
+    r.run(close=close, now=now)                # nothing new: no second deposit, no more buys
+    assert len(_flows(r)) == 1 and len(trades(r)) == before + len(new)
+
+
+def test_withdrawal_request_sets_cash_aside_then_finishes(tmp_path, close):
+    from quant import performance, withdraw
+    sent = []
+    r = make_runner(tmp_path, cash=20_000.0)
+    r.notify = sent.append
+    now = datetime(2026, 10, 8, 14, tzinfo=timezone.utc)
+    r.run(close=close, now=now)
+    withdraw.request(r.dir, "$6000")
+    s = r.run(close=close, now=now)
+    sells = [t for t in trades(r) if t["note"] == "출금 준비"]
+    assert sells and all(t["side"] == "sell" for t in sells)
+    assert s["cash"] >= 6000 and s["withdraw"]["ready"] and any("출금 준비 완료" in t for t in sent)
+    assert r.run(close=close, now=now)["withdraw"]["ready"]            # the reserve is not reinvested
+    assert not [t for t in trades(r) if t["note"] == "남는 현금 투자"]
+    r.broker.acct["cash"] -= 6000.0           # the user withdraws in the Kiwoom app
+    r.broker._save()
+    s = r.run(close=close, now=now)
+    assert _flows(r)[-1]["amount"] == -6000.0 and not (r.dir / "withdraw.json").exists()
+    assert "withdraw" not in s and any("요청하신 출금이 끝났어요" in t for t in sent)
+    assert s["principal"] == pytest.approx(s["initial_capital"] - 6000)
+    rows = [json.loads(x) for x in (r.dir / "equity.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert abs(performance.total_return(rows, s["initial_capital"])) < 0.01   # not -30%
+
+
+def test_withdrawal_is_not_a_daily_loss(tmp_path):
+    r = make_runner(tmp_path)
+    (r.dir / "equity.jsonl").write_text(json.dumps({"date": "2026-10-07", "equity": 10_000}) + "\n")
+    assert "손실 한도" in r._guard([], 7_000, "2026-10-08")
+    assert r._guard([], 7_000, "2026-10-08", flow=-3_000) is None
+
+
+def test_no_flow_while_orders_are_unfilled(tmp_path, close):
+    r = make_runner(tmp_path)
+    meta = {"seen": {"cash": 1000.0, "qty": {}}}
+    (r.dir / "trades.jsonl").write_text(json.dumps({"symbol": "SPY", "status": "pending"}) + "\n")
+    assert r._detect_flow(meta, {}, 5000.0, {}) == 0.0
+    (r.dir / "trades.jsonl").write_text(json.dumps({"symbol": "SPY", "status": "filled"}) + "\n")
+    assert r._detect_flow(meta, {}, 5000.0, {}) == 4000.0
+    # shares bought since then explain the cash that left: no flow
+    assert r._detect_flow(meta, {"SPY": {"qty": 2, "avg_price": 400.0}}, 200.0, {"SPY": 400.0}) == 0.0
+    assert r._detect_flow(meta, {}, 1050.0, {}) == 0.0                  # a small dividend

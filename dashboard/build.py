@@ -56,6 +56,7 @@ def load(data_dir: Path) -> dict:
         "state": state,
         "trades": read_jsonl(data_dir / "trades.jsonl"),
         "equity": read_jsonl(data_dir / "equity.jsonl"),
+        "flows": read_jsonl(data_dir / "flows.jsonl"),   # 입금·출금 (실행기가 감지)
     }
     # 자동 실행 도우미(mintory_agent)가 남기는 상태. 없거나 깨져 있으면 표시하지 않는다.
     agent_path = data_dir / "agent.json"

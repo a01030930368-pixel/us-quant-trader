@@ -14,6 +14,8 @@ from pathlib import Path
 
 import requests
 
+from quant import performance
+
 ROOT = Path(__file__).resolve().parents[1]
 ENV = ROOT / ".env"
 API = "https://api.telegram.org"
@@ -104,12 +106,13 @@ def run_message(job: str, result: str, state: dict, new_trades: list[dict],
     elif equity:
         cur = float(equity[-1]["equity"])
         summary.append(f"💵 평가금액 {_usd(cur)}")
-        if len(equity) >= 2 and float(equity[-2]["equity"]):
-            day = cur / float(equity[-2]["equity"]) - 1
-            summary.append(f"{trend(day)} 오늘 {_pct(day)}")
         initial = float(state.get("initial_capital") or 0)
+        g = performance.growth(equity, initial)
+        if len(g) >= 2 and g[-2]:
+            day = g[-1] / g[-2] - 1
+            summary.append(f"{trend(day)} 오늘 {_pct(day)}")
         if initial:
-            summary.append(f"📊 누적 {_pct(cur / initial - 1)}")
+            summary.append(f"📊 누적 {_pct(g[-1] - 1)}")
 
     if not (new_trades or problems or paused or (daily and summary) or job == "run"):
         return None
@@ -150,14 +153,20 @@ def weekly_message(week_end: str, state: dict, equity: list[dict], trades: list[
     initial = float(state.get("initial_capital") or 0)
     base = float(before[-1]["equity"]) if before else initial
     cur = float(week[-1]["equity"])
+    moved = sum(performance.flow(r) for r in week)       # deposits/withdrawals this week
+    g = dict(zip((r["date"] for r in equity), performance.growth(equity, initial)))
+    g0 = g[before[-1]["date"]] if before else (1.0 if initial else None)
     blocks = [f"📅 Mintory 주간 리포트\n{_md(start.isoformat())} ~ {_md(week[-1]['date'])}"]
 
     head = [f"💵 평가금액 {_usd(cur)}"]
-    wk = cur / base - 1 if base else None
+    wk = g[week[-1]["date"]] / g0 - 1 if g0 else None
     if wk is not None:
-        head.append(f"{trend(wk)} 이번 주 {_pct(wk)} ({'+' if cur >= base else '-'}{_usd(abs(cur - base))})")
+        pnl = cur - base - moved
+        head.append(f"{trend(wk)} 이번 주 {_pct(wk)} ({'+' if pnl >= 0 else '-'}{_usd(abs(pnl))})")
+    if moved:
+        head.append(f"{'💵 입금' if moved > 0 else '🏧 출금'} {_usd(abs(moved))} (수익률에서 뺐어요)")
     if initial:
-        head.append(f"📊 누적 {_pct(cur / initial - 1)}")
+        head.append(f"📊 누적 {_pct(g[week[-1]['date']] - 1)}")
     blocks.append("\n".join(head))
 
     cmp_ = []
@@ -170,7 +179,8 @@ def weekly_message(week_end: str, state: dict, equity: list[dict], trades: list[
     m0 = series.get(ref["date"]) if before else series.get(week[0]["date"])
     m1 = series.get(week[-1]["date"])
     if wk is not None and m0 and m1 and before:
-        bt = float(m1) / float(m0) - 1
+        mg = performance.model_growth(series, equity, initial)
+        bt = mg[week[-1]["date"]] / mg[ref["date"]] - 1 if ref["date"] in mg else float(m1) / float(m0) - 1
         cmp_.append(f"· 백테스트 {_pct(bt)} · 차이 {_pp(wk - bt)}")
     if cmp_:
         blocks.append("🆚 같은 기간 비교\n" + "\n".join(cmp_))
