@@ -54,7 +54,8 @@ STARTUP_NAME = "Mintory agent.bat"
 WAKE_TASK = "Mintory 자동 실행"
 WAKE_AT = (23, 40)         # KST, a few minutes before RUN_AT
 AWAKE_BEFORE = timedelta(minutes=20)
-WATCHED = [Path(__file__).resolve(), ROOT / "dashboard" / "build.py"]
+WATCHED = [Path(__file__).resolve(), ROOT / "dashboard" / "build.py",
+           ROOT / "quant" / "telegram_bot.py", ROOT / "quant" / "notify.py"]
 
 # What each button runs. Both use the Kiwoom mock account; there is no live mode here.
 JOBS = {
