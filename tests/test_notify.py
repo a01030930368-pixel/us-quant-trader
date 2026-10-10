@@ -12,9 +12,10 @@ def test_trade_message_lists_orders_and_summary():
               {"side": "buy", "symbol": "TQQQ", "qty": 3, "price": 81.0, "status": "rejected",
                "message": "예수금 부족"}]
     text = notify.run_message("auto", "ok", STATE, trades, EQ)
-    assert "매수 QQQ 65주 @ $750.19 · 체결" in text
+    assert "🔴 매수 QQQ 65주 @ $750.19\n    ✅ 체결" in text
     assert "거부 (예수금 부족)" in text
-    assert "평가금액 $100,500.00 · 오늘 +0.50% · 누적 +0.50%" in text
+    assert "💵 평가금액 $100,500.00\n📈 오늘 +0.50%\n📊 누적 +0.50%" in text
+    assert "\n\n🛒 주문\n" in text
 
 
 def test_quiet_day_respects_daily_switch():

@@ -141,9 +141,10 @@ def missed_message(days: list[str], next_iso: str | None) -> str:
     if next_iso:
         t = datetime.fromisoformat(next_iso)
         nxt = f" ({t.month}/{t.day} {t:%H:%M})"
-    return (f"⚠️ Mintory 자동 실행을 놓쳤어요\n· {when} 밤\n"
-            "그 시각에 PC가 꺼져 있었거나 잠자기 상태였어요.\n"
-            f"밀린 주문은 다음 자동 실행{nxt} 때 알아서 맞춰집니다. 그 시각에 PC를 켜 두세요.")
+    return (f"⚠️ Mintory 자동 실행을 놓쳤어요\n\n🌙 {when} 밤\n"
+            "그 시각에 PC가 꺼져 있었거나 잠자기 상태였어요.\n\n"
+            f"🔁 밀린 주문은 다음 자동 실행{nxt} 때 알아서 맞춰집니다.\n"
+            "💡 그 시각에 PC를 켜 두세요.")
 
 
 def now_iso() -> str:

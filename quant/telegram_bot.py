@@ -30,6 +30,7 @@ COMMANDS = [
     ("resume", "재개", "자동 매매 주문 다시 하기"),
     ("help", "도움말", "명령 목록"),
 ]
+ICONS = {"balance": "💰", "refresh": "🔄", "status": "📋", "pause": "⏸", "resume": "▶️", "help": "❓"}
 ALIASES = {ko: en for en, ko, _ in COMMANDS} | {
     "start": "help", "?": "help", "？": "help", "명령": "help", "명령어": "help", "도움": "help", "정지": "pause", "멈춰": "pause", "다시시작": "resume",
 }
@@ -73,7 +74,7 @@ def _when(iso: str | None) -> str:
 
 def balance_text(state: dict, quotes: dict | None = None, paused: bool = False) -> str:
     if not state:
-        return "아직 잔고 기록이 없어요. Mintory에서 잔고 새로고침을 한 번 눌러 주세요."
+        return "💰 아직 잔고 기록이 없어요.\n\nMintory에서 잔고 새로고침을 한 번 눌러 주세요."
     q = (quotes or {}).get("quotes") or {}
     rows, total = [], float(state.get("cash") or 0)
     for p in state.get("positions") or []:
@@ -83,42 +84,51 @@ def balance_text(state: dict, quotes: dict | None = None, paused: bool = False) 
         value = qty * price
         total += value
         avg = float(p.get("avg_price") or 0)
-        pnl = f" · 손익 {(price / avg - 1) * 100:+.2f}%" if avg else ""
-        day = f" · 오늘 {live['change'] * 100:+.2f}%" if live.get("change") is not None else ""
-        rows.append((value, f"· {sym} {qty:g}주 {_usd(value)}{day}{pnl}"))
+        bits = []
+        if live.get("change") is not None:
+            bits.append(f"{notify.trend(live['change'])} 오늘 {live['change'] * 100:+.2f}%")
+        if avg:
+            bits.append(f"손익 {(price / avg - 1) * 100:+.2f}%")
+        line = f"· {sym} {qty:g}주 · {_usd(value)}"
+        if bits:
+            line += "\n    " + " · ".join(bits)
+        rows.append((value, line))
     basis = (f"시세 {_when(quotes.get('as_of'))}" if q
              else f"기록 {_when(state.get('updated_at'))}")
-    out = [f"💰 Mintory 잔고 ({basis} 기준)", f"평가금액 {_usd(total)}"]
+    head = [f"💵 평가금액 {_usd(total)}"]
     initial = float(state.get("initial_capital") or 0)
     if initial:
-        out[-1] += f" · 누적 {(total / initial - 1) * 100:+.2f}%"
-    out += [r for _, r in sorted(rows, reverse=True)]
-    out.append(f"· 현금 {_usd(float(state.get('cash') or 0))}")
+        head.append(f"📊 누적 {(total / initial - 1) * 100:+.2f}%")
+    hold = ["📦 보유 종목"] + [r for _, r in sorted(rows, reverse=True)]
+    hold.append(f"· 현금 · {_usd(float(state.get('cash') or 0))}")
+    blocks = [f"💰 Mintory 잔고\n🕒 {basis} 기준", "\n".join(head), "\n".join(hold)]
     if paused:
-        out.append("⏸ 일시정지 중 (주문 안 함)")
-    return "\n".join(out)
+        blocks.append("⏸ 일시정지 중 (주문 안 함)")
+    return "\n\n".join(blocks)
 
 
 def status_text(state: dict, agent: dict, paused: bool) -> str:
-    out = ["📋 Mintory 상태"]
-    out.append("⏸ 일시정지 중: 자동 매매가 주문을 내지 않아요. /resume 으로 재개"
-               if paused else "▶ 자동 매매 켜짐")
+    lines = ["⏸ 일시정지 중 · 자동 매매가 주문을 내지 않아요\n    /resume 으로 재개"
+             if paused else "▶️ 자동 매매 켜짐"]
     if agent.get("next_run"):
-        out.append(f"다음 자동 실행: {_when(agent['next_run'])}")
+        lines.append(f"⏰ 다음 자동 실행 · {_when(agent['next_run'])}")
     if agent.get("last_run"):
         res = agent.get("last_result") or "-"
-        out.append(f"마지막 실행: {_when(agent['last_run'])} · {'OK' if res == 'ok' else res}")
+        ok = res == "ok"
+        lines.append(f"{'✅' if ok else '❌'} 마지막 실행 · {_when(agent['last_run'])} · {'OK' if ok else res}")
     nxt = (state.get("next_rebalance") or {}).get("order_date")
     if nxt:
-        out.append(f"다음 리밸런싱 주문일: {nxt}")
+        lines.append(f"📅 다음 리밸런싱 주문일 · {nxt}")
+    blocks = ["📋 Mintory 상태", "\n".join(lines)]
     if agent.get("missed"):
-        out.append("⚠️ 놓친 실행: " + ", ".join(agent["missed"]))
-    return "\n".join(out)
+        blocks.append("⚠️ 놓친 실행 · " + ", ".join(agent["missed"]))
+    return "\n\n".join(blocks)
 
 
 def help_text() -> str:
-    return ("Mintory 명령\n" + "\n".join(f"/{en} ({ko}) {desc}" for en, ko, desc in COMMANDS)
-            + "\n\n한국어로 '잔고'처럼 보내도 되고, 언제든 /? 를 보내면 이 목록이 나와요.")
+    rows = "\n".join(f"{ICONS[en]} /{en} ({ko})\n    {desc}" for en, ko, desc in COMMANDS)
+    return ("🤖 Mintory 명령\n\n" + rows
+            + "\n\n💡 한국어로 '잔고'처럼 보내도 되고, 언제든 /? 를 보내면 이 목록이 나와요.")
 
 
 def handle(text: str, act: Actions) -> str:
@@ -131,21 +141,21 @@ def handle(text: str, act: Actions) -> str:
     if cmd == "refresh":
         result = act.refresh()
         if result is None:
-            return "지금 다른 작업(매매 실행이나 새로고침) 중이에요. 잠시 뒤에 다시 보내 주세요."
-        head = "" if result == "ok" else f"⚠️ 잔고를 불러오지 못했어요 ({result}). 마지막 기록을 보여 드려요.\n"
+            return "⏳ 지금 다른 작업(매매 실행이나 새로고침) 중이에요.\n\n잠시 뒤에 다시 보내 주세요."
+        head = "" if result == "ok" else f"⚠️ 잔고를 불러오지 못했어요 ({result}).\n마지막 기록을 보여 드려요.\n\n"
         return head + balance_text(act.state(), None, act.paused())
     if cmd == "status":
         return status_text(act.state(), act.agent(), act.paused())
     if cmd == "pause":
         if act.paused():
-            return "이미 일시정지 중이에요. 다시 하려면 /resume"
+            return "⏸ 이미 일시정지 중이에요.\n\n다시 하려면 /resume"
         act.set_paused(True)
-        return "⏸ 일시정지했어요. 자동 매매가 주문을 내지 않아요.\n다시 하려면 /resume"
+        return "⏸ 일시정지했어요\n\n자동 매매가 주문을 내지 않아요.\n다시 하려면 /resume"
     if cmd == "resume":
         if not act.paused():
-            return "일시정지 상태가 아니에요. 자동 매매는 그대로 켜져 있어요."
+            return "▶️ 일시정지 상태가 아니에요.\n\n자동 매매는 그대로 켜져 있어요."
         act.set_paused(False)
-        return "▶ 다시 시작했어요. 다음 자동 실행부터 주문을 냅니다."
+        return "▶️ 다시 시작했어요\n\n다음 자동 실행부터 주문을 냅니다."
     return help_text()
 
 

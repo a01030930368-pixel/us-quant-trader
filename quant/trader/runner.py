@@ -359,10 +359,10 @@ class Runner:
     def _announce(self, orders: list[dict]) -> None:
         if self.mode not in self.LIVE_MODES or not self.notify:
             return
-        lines = [f"· {'매수' if o['side'] == 'buy' else '매도'} {o['symbol']} {o['qty']}주 "
+        lines = [f"{'🔴 매수' if o['side'] == 'buy' else '🔵 매도'} {o['symbol']} {o['qty']}주 "
                  f"(약 ${o['value']:,.0f})" for o in orders]
         try:
-            self.notify("💰 Mintory 실계좌 주문을 보냅니다\n" + "\n".join(lines))
+            self.notify("💰 Mintory 실계좌 주문을 보냅니다\n\n" + "\n".join(lines))
         except Exception:  # noqa: BLE001 - an alert must never stop or crash trading
             pass
 

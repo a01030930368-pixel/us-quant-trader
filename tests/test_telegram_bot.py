@@ -46,7 +46,7 @@ def test_balance_uses_quotes_when_available():
 def test_balance_without_quotes_uses_record():
     act, _ = actions()
     text = tb.handle("잔고", act)
-    assert "기록 10/10(토) 16:35" in text and "현금 $2,171.22" in text
+    assert "기록 10/10(토) 16:35" in text and "현금 · $2,171.22" in text
 
 
 def test_pause_resume_and_status():
@@ -55,7 +55,7 @@ def test_pause_resume_and_status():
     assert "이미 일시정지" in tb.handle("/pause", act)
     assert "일시정지 중" in tb.handle("/status", act)
     assert "다시 시작" in tb.handle("/resume", act) and not box["paused"]
-    assert "다음 자동 실행: 10/12(월) 23:45" in tb.handle("상태", act)
+    assert "다음 자동 실행 · 10/12(월) 23:45" in tb.handle("상태", act)
 
 
 def test_refresh_busy_and_help():
