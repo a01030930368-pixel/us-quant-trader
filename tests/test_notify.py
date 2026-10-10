@@ -127,3 +127,10 @@ def test_rehearsal_message():
     assert notify.rehearsal_message("ok", {"cash": 1.0, "alerts": []}) is None          # quiet night
     failed = notify.rehearsal_message("error (exit 1)", state)
     assert "실패" in failed and "QQQ" not in failed                                     # stale plan hidden
+
+
+def test_failed_run_says_why_and_does_not_call_old_numbers_today():
+    eq = [{"date": "2026-10-08", "equity": 100.0}, {"date": "2026-10-09", "equity": 101.0}]
+    text = notify.run_message("auto", "error (exit 1)", {}, [], eq, reason="키움 서버 점검 중")
+    assert "키움 서버 점검 중" in text and "오늘" not in text and "10/9(금) 기록 기준" in text
+    assert "agent.log" not in text

@@ -57,7 +57,7 @@ body {
   height: 100%;
   min-height: 640px;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 .topbar {
   display: flex;
@@ -87,6 +87,8 @@ body {
 .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: #45d0b8; box-shadow: 0 0 0 3px rgba(69, 208, 184, 0.18); }
 .badge.sample { color: var(--warn); background: rgba(255, 181, 71, 0.1); }
 .badge.stale { color: var(--up); background: var(--up-bg); }
+.sample-bar { margin: 12px 24px 0; padding: 10px 14px; border-radius: 10px; background: rgba(255, 181, 71, 0.1); color: var(--warn); font-size: 13px; }
+.sample-bar b { color: var(--fg); }
 /* 로고 옆 시장 지수 (S&P 500 · 나스닥 · VIX) */
 .indices { display: flex; align-items: center; gap: 22px; flex: none; }  /* 줄어들면 내용이 시계 위로 넘침 */
 .ix { display: grid; gap: 1px; }
@@ -286,6 +288,18 @@ tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
 .pv-row .sell { color: var(--down); }
 .pv-row small { color: var(--sub); }
 .pv-none { font-size: 13px; color: var(--sub); }
+/* 카나리아 신호와 분할(덩어리) 상태 */
+.canary { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 9px 12px; border-radius: 10px; background: var(--panel-2); }
+.canary i { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #45d0b8; }
+.canary.off i { background: var(--warn); }
+.canary small { color: var(--sub); margin-left: auto; white-space: nowrap; }
+.parts { display: grid; gap: 6px; }
+.parts-head { font-size: 12.5px; color: var(--sub); }
+.part { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 10px; align-items: baseline; font-size: 12.5px; }
+.part b { font-weight: 600; white-space: nowrap; }
+.part b.cur { color: var(--fg); }
+.part span { color: var(--sub); }
+.part em { font-style: normal; color: var(--warn); }
 .signal { padding-top: 14px; display: grid; gap: 14px; }
 .signal-head { font-size: 12.5px; color: var(--sub); }
 .sleeve { display: grid; gap: 5px; }
@@ -408,6 +422,23 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
 /* Narrow side column: drop the mini chart, the day % stays under the price. */
 @media (max-width: 1879px) { .spark-col { display: none; } .holdings.live .nm small { max-width: none; } }
 
+
+/* Laptop screens (1366x768, 1600x900): the holdings table needs the room more than the
+   allocation list above it (same symbols), and KPI notes wrap instead of being cut. */
+@media (max-height: 940px) and (min-height: 701px) and (min-width: 1181px) {
+  .alloc { grid-template-columns: 96px minmax(0, 1fr); gap: 14px; padding-bottom: 8px; }
+  .donut { width: 96px; height: 96px; }
+  .donut .c b { font-size: 13px; }
+  .alloc-list { gap: 3px; font-size: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 14px; }
+  .alloc-list .t { display: none; }
+  .col-side { grid-template-rows: minmax(0, 1.15fr) minmax(0, 1fr); }
+}
+@media (max-width: 1500px) and (min-width: 1181px) {
+  .kpi .s { white-space: normal; overflow: visible; }
+  .kpi .v { font-size: 21px; }
+  .kpi.hero .v { font-size: 26px; }
+  .kpi { padding: 14px 16px; }
+}
 
 /* Smaller windows: stack and let the page scroll. */
 @media (max-width: 1180px), (max-height: 700px) {
@@ -580,6 +611,11 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   var LIVE = { on: false, fresh: false, quotes: {}, label: "", title: "" };
 
   function $(id) { return document.getElementById(id); }
+  // 새로 읽기 전에 열어 둔 창(자세히, 점검표, 확인 창, 상태 불)이 있으면 닫힐 때까지 기다린다.
+  function reloadWhenIdle() {
+    if (document.querySelector(".modal-back, .led-pop")) { setTimeout(reloadWhenIdle, 5000); return; }
+    location.reload();
+  }
   function each(sel, fn) { Array.prototype.forEach.call(document.querySelectorAll(sel), fn); }
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
   function usd(v, dp) {
@@ -625,11 +661,13 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
 
   // 같은 전략을 같은 날, 같은 금액으로 백테스트한 평가금액 (실행기가 state.backtest에 남김)
   var BT = S.backtest || null, MODEL = (BT && BT.series) || {};
+  // SPY 비교 기준: 처음 돈을 넣은 순간의 SPY 가격(state.benchmark_start). 없으면 첫 기록일 종가.
+  var B0 = +S.benchmark_start || (EQ.length ? +EQ[0].benchmark_close : 0);
   var series = EQ.map(function (e) {
     return {
       date: e.date, equity: +e.equity,
       ret: initial ? e.equity / initial - 1 : 0,
-      bench: e.benchmark_close != null && EQ[0].benchmark_close ? e.benchmark_close / EQ[0].benchmark_close - 1 : null,
+      bench: e.benchmark_close != null && B0 ? e.benchmark_close / B0 - 1 : null,
       model: MODEL[e.date] != null && initial ? MODEL[e.date] / initial - 1 : null
     };
   });
@@ -654,12 +692,17 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   document.title = "Mintory" + (strat.name ? " · " + strat.name : "");
   // 오른쪽 위: 샘플 표시만 배지로 남기고, 실행 상태는 작은 불 하나로 (누르면 자세히)
   var badges = [], issues = [], info = [];
-  if (META.source === "sample") badges.push('<span class="badge sample">샘플 데이터</span>');
+  if (META.source === "sample") {
+    badges.push('<span class="badge sample">예시 화면</span>');
+    document.querySelector(".workspace").insertAdjacentHTML("beforebegin", '<div class="sample-bar">아직 내 모의투자 기록이 없어서 <b>예시 숫자</b>를 보여 드리고 있어요. 실제 계좌와 관계없어요.' +
+      (DATA.control ? " 오른쪽 위 <b>잔고 새로고침</b>을 누르면 내 계좌 기록으로 바뀌어요." : "") + "</div>");
+  }
   (S.alerts || []).forEach(function (a) {
     if (/^STOP 파일/.test(a.message || "")) return;  // the light turns yellow instead
     if (a.level === "warn" || a.level === "error") issues.push((a.level === "error" ? "오류 · " : "주의 · ") + a.message);
   });
   info.push(MODES[S.mode] || S.mode || "모의투자");
+  if (strat.name) info.push("전략 · " + strat.name);
   var AG = DATA.agent;
   var mdhm = function (iso) { var m = /^\d{4}-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso || ""); return m ? (+m[1]) + "/" + (+m[2]) + " " + m[3] + ":" + m[4] : ""; };
   if (AG && AG.next_run) info.push("다음 자동 실행 " + mdhm(AG.next_run));
@@ -984,17 +1027,37 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
         esc(o.symbol) + " " + Number(o.qty).toLocaleString("en-US") + "주</span><small>약 " + usd(o.value) + "</small></div>";
     }).join("") + '<div class="pv-none" style="margin-top:4px">신호일 장 마감 가격으로 다시 계산하니 수량은 달라질 수 있어요.</div></div>';
   }
+  // EEM 카나리아: 신호 종목의 1·3·6·12개월 가중 모멘텀이 0 이하면 그날 리밸런싱하는 덩어리는 안전자산으로
+  function canaryHtml() {
+    var cs = (S.signal && S.signal.canary) || [];
+    if (!cs.length) return "";
+    var on = cs.every(function (c) { return c.risk_on; });
+    return '<div class="canary' + (on ? "" : " off") + '"><i></i><span>' + cs.map(function (c) { return esc(c.symbol); }).join("·") + " 신호 · " +
+      (on ? "좋음 · <b>투자</b>" : "나쁨 · <b>" + esc(strat.safe_asset || "IEF") + "로 피함</b>") + "</span><small>" +
+      cs.map(function (c) { return esc(c.symbol) + " " + pct(c.score, 1); }).join(" · ") + " · " + ymd(S.signal.as_of) + "</small></div>";
+  }
+  // 분할: 돈을 덩어리로 나눠 다른 날 리밸런싱. 각 덩어리가 지금 무엇을 들고 있는지
+  function partsHtml() {
+    var parts = (S.signal && S.signal.tranches) || [];
+    if (!parts.length) return "";
+    return '<div class="parts"><div class="parts-head">덩어리별 보유 (각 ' + pct(1 / parts.length, 0, true) + ")</div>" + parts.map(function (p) {
+      var w = Object.keys(p.weights || {}).sort(function (a, b) { return p.weights[b] - p.weights[a]; });
+      return '<div class="part"><b' + (p.n === nextR.tranche ? ' class="cur" title="다음 주문 때 바뀌는 덩어리"' : "") + ">" + p.n + "번" + (p.n === nextR.tranche ? " ▸" : "") + "</b><span>" +
+        (p.decided ? md(p.decided) + " 결정" : "") + (p.risk_on === false ? " · <em>신호 나빠 " + esc(strat.safe_asset || "IEF") + "</em>" : "") + " · " +
+        w.map(function (s) { return esc(s) + " " + pct(p.weights[s], 0, true); }).join(", ") + "</span></div>";
+    }).join("") + "</div>";
+  }
   var reb = [];
   if (nextDate) {
     var start = S.last_rebalance ? parseDate(S.last_rebalance) : null, end = parseDate(nextDate);
     var prog = start ? Math.max(0, Math.min(1, days(start, today()) / Math.max(1, days(start, end)))) : null;
-    reb.push('<div class="next"><div class="next-top"><div class="when">' + md(nextDate) + "<small>(" + wk(nextDate) + ") 주문</small></div>" +
+    reb.push('<div class="next"><div class="next-top"><div class="when">' + md(nextDate) + "<small>(" + wk(nextDate) + ") 주문" + (nextR.tranches ? " · " + nextR.tranche + "번 덩어리" : "") + "</small></div>" +
       '<div class="dday">' + (dleft > 0 ? "D-" + dleft : dleft === 0 ? "오늘" : "확인 필요") + "</div></div>" +
       (prog == null ? "" : '<div class="cycle"><div class="track"><span style="width:' + (prog * 100).toFixed(1) + '%"></span></div><div class="ends"><span>' + md(S.last_rebalance) + " 매매</span><span>" + md(nextDate) + "</span></div></div>") +
       '<div class="steps">' +
       (nextR.signal_date ? '<div class="step"><span class="k">신호 계산</span><b>' + md(nextR.signal_date) + " (" + wk(nextR.signal_date) + ") 장 마감 후</b></div>" : "") +
       (nextR.order_date ? '<div class="step"><span class="k">주문 실행</span><b>' + md(nextR.order_date) + " (" + wk(nextR.order_date) + ") 개장 직후</b></div>" : "") +
-      "</div>" + previewHtml(S.preview) + "</div>");
+      "</div>" + canaryHtml() + previewHtml(S.preview) + partsHtml() + "</div>");
   } else {
     reb.push('<div class="next sub">다음 일정이 아직 기록되지 않았어요.</div>');
   }
@@ -1011,7 +1074,8 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       ? "평균 모멘텀(" + sig.lookbacks.map(months).join("·") + "개월 수익률 평균)"
       : "최근 " + (sig.lookback_days ? months(sig.lookback_days) + "개월 " : "") + "수익률";
     var h = '<div class="signal"><div class="signal-head">현재 보유 신호 · ' + ymd(sig.as_of) + " 기준 " + basis +
-      (strat.safe_asset ? " · 마이너스면 " + esc(strat.safe_asset) : "") + "</div>";
+      (strat.safe_asset ? " · 마이너스면 " + esc(strat.safe_asset) : "") +
+      ((S.signal.tranches || []).length ? " · ● 표시는 어느 덩어리든 지금 들고 있는 종목 (덩어리마다 고른 날이 달라 지금 점수와 다를 수 있어요)" : "") + "</div>";
     (strat.sleeves || Object.keys(groups).map(function (k) { return { id: k, name: k }; })).forEach(function (sl) {
       var list = (groups[sl.id] || []).slice().sort(function (a, b) { return b.return - a.return; });
       if (!list.length) return;
@@ -1434,7 +1498,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     totalRet = initial ? equity / initial - 1 : 0;
     // The chart's last point is "now": replace today's recorded row or add one.
     series = baseSeries.filter(function (p) { return p.date < ref.session; });
-    var b0 = EQ.length ? +EQ[0].benchmark_close : null, bq = Q[bench];
+    var b0 = B0 || null, bq = Q[bench];
     series.push({ date: ref.session, equity: equity, ret: totalRet, live: true,
                   bench: bq && b0 ? bq.price / b0 - 1 : (series.length ? series[series.length - 1].bench : null) });
     var pk = initial;
@@ -1614,7 +1678,7 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
           var lj = c.last_job || {};
           if (lj.name === "rehearsal") { wasBusy = false; pollTimer = setTimeout(poll, 30000); return; }  // paper records unchanged
           if (lj.result && lj.result !== "ok") toast((JOBS[lj.name] || "작업").replace(" 중…", "") + "에 실패했어요." + (lj.reason ? " " + lj.reason : "") + " 오른쪽 위 빨간 불을 누르면 다시 볼 수 있어요.");
-          setTimeout(function () { location.reload(); }, lj.result && lj.result !== "ok" ? 6000 : 0);
+          setTimeout(reloadWhenIdle, lj.result && lj.result !== "ok" ? 6000 : 0);
           return;
         }
         wasBusy = !!c.busy;
@@ -1716,11 +1780,12 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
         toast(next ? "일시정지했어요. 다시 시작을 누를 때까지 주문을 내지 않아요." : "다시 시작했어요. 다음 자동 실행부터 주문을 낼 수 있어요.");
       }).catch(function () { toast("자동 실행기에 연결하지 못했어요. Mintory를 다시 열어주세요."); });
     });
+    if (META.source === "sample") { btnRun.hidden = true; btnCheck.hidden = true; }  // 예시 숫자로는 매매·점검을 하지 않음
     paint(CTL);
     poll();
   }
 
   // 실제 기록을 보는 중이면 몇 분마다 새로 읽는다. 자동 실행이 HTML을 다시 만들면 바로 반영된다.
-  if (META.source === "paper") setTimeout(function () { location.reload(); }, 5 * 60 * 1000);
+  if (META.source === "paper") setTimeout(reloadWhenIdle, 5 * 60 * 1000);
 })();
 </script>

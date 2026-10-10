@@ -213,7 +213,9 @@ def handle(text: str, act: Actions) -> str:
         result = act.refresh()
         if result is None:
             return "⏳ 지금 다른 작업(매매 실행이나 새로고침) 중이에요.\n\n잠시 뒤에 다시 보내 주세요."
-        head = "" if result == "ok" else f"⚠️ 잔고를 불러오지 못했어요 ({result}).\n마지막 기록을 보여 드려요.\n\n"
+        reason = ((act.agent() or {}).get("last_job") or {}).get("reason") or ""
+        head = "" if result == "ok" else ("⚠️ 잔고를 불러오지 못했어요" + (f"\n{reason}" if reason else "")
+                                          + "\n\n마지막 기록을 보여 드려요.\n\n")
         return head + balance_text(act.state(), None, act.paused())
     if cmd == "next":
         return next_text(act.state(), act.paused())

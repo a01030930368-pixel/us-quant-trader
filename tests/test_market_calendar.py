@@ -40,4 +40,5 @@ def test_next_rebalance_skips_good_friday():
     cfg = TraderConfig(canary=("EEM",), tranches=4)
     # 3/31 month end + 5 trading days skips Good Friday 4/3 -> 4/8, order 4/9
     assert next_rebalance(pd.Timestamp("2026-04-02"), cfg) == {"signal_date": "2026-04-08",
-                                                               "order_date": "2026-04-09"}
+                                                               "order_date": "2026-04-09",
+                                                               "tranche": 2, "tranches": 4}
