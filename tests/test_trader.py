@@ -413,3 +413,46 @@ def test_simulated_run_keeps_its_own_fees(tmp_path, close):
     tr = trades(r)
     assert tr and all(x["fee"] > 0 for x in tr)
     assert "fee_batch" not in json.loads((r.dir / "meta.json").read_text(encoding="utf-8"))
+
+
+# -- live-account safety --------------------------------------------------------
+
+def test_daily_loss_limit_skips_orders(tmp_path, close):
+    r = make_runner(tmp_path)
+    (r.dir / "equity.jsonl").write_text(json.dumps({"date": "2026-10-07", "equity": 12_000.0}) + "\n",
+                                        encoding="utf-8")
+    state = r.run(close, execute=True, now=datetime(2026, 10, 8, 23, 0, tzinfo=timezone.utc))
+    assert "하루 손실 한도" in errors(state) and not trades(r)
+    r.cfg.max_daily_loss = None
+    r.run(close, execute=True, now=datetime(2026, 10, 8, 23, 0, tzinfo=timezone.utc))
+    assert trades(r)
+
+
+def test_live_mode_needs_order_limit_and_announces(tmp_path, close):
+    sent = []
+    cfg = TraderConfig(state_dir=tmp_path / "paper")
+    broker = SimBroker(cfg.state_dir / "sim_account.json", starting_cash=10_000.0)
+    r = Runner(broker, cfg, mode="kiwoom_live", notify=sent.append)
+    state = r.run(close, execute=True, now=datetime(2026, 10, 8, 23, 0, tzinfo=timezone.utc))
+    assert "MAX_ORDER_USD" in errors(state) and not trades(r) and not sent
+    r.cfg.max_order_usd = 9_000.0
+    r.run(close, execute=True, now=datetime(2026, 10, 8, 23, 0, tzinfo=timezone.utc))
+    assert trades(r) and len(sent) == 1 and "실계좌 주문" in sent[0]
+
+
+def test_mock_mode_never_announces(tmp_path, close):
+    sent = []
+    cfg = TraderConfig(state_dir=tmp_path / "paper")
+    r = Runner(SimBroker(cfg.state_dir / "sim_account.json", starting_cash=10_000.0), cfg,
+               mode="kiwoom_mock", notify=sent.append)
+    r.run(close, execute=True, now=datetime(2026, 10, 8, 23, 0, tzinfo=timezone.utc))
+    assert trades(r) and not sent
+
+
+def test_safety_limits_from_env():
+    from scripts.run_trader import safety_limits
+    assert safety_limits({}) == {}
+    assert safety_limits({"MAX_ORDER_USD": "$50,000", "MAX_DAILY_LOSS_PCT": "8%"}) == {
+        "max_order_usd": 50_000.0, "max_daily_loss": 0.08}
+    assert safety_limits({"MAX_DAILY_LOSS_PCT": "0"}) == {"max_daily_loss": None}
+    assert safety_limits({"MAX_ORDER_USD": "lots"}) == {}

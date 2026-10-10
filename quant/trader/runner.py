@@ -58,6 +58,9 @@ class TraderConfig:
     # catches price/unit bugs; GLD sits in both sleeves, so one order can
     # legitimately be ~75% of the account (or 100% when everything goes to IEF).
     max_order_usd: float | None = None
+    # Skip the day's orders when the account fell more than this fraction since
+    # the previous recorded close (e.g. 0.10 = 10%). None turns it off.
+    max_daily_loss: float | None = 0.10
     min_trade_usd: float = 50.0        # skip tiny rebalancing trades
     max_data_age_days: int = 5         # refuse to trade on stale prices
     state_dir: Path = Path("paper")
@@ -207,8 +210,14 @@ def plan_orders(weights: dict[str, float], prices: dict[str, float],
 
 
 class Runner:
-    def __init__(self, broker, cfg: TraderConfig | None = None, mode: str = "simulate"):
+    LIVE_MODES = ("kiwoom_live",)
+
+    def __init__(self, broker, cfg: TraderConfig | None = None, mode: str = "simulate",
+                 notify=None):
         self.broker, self.cfg, self.mode = broker, cfg or TraderConfig(), mode
+        # Real-money orders are announced on Telegram right before they go out
+        # (the user chose an alert over a confirmation step, 2026-10-10).
+        self.notify = notify
         self.dir = Path(self.cfg.state_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
 
@@ -321,6 +330,42 @@ class Runner:
         tmp.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
         os.replace(tmp, p)
 
+    def _prev_equity(self, before: str) -> float | None:
+        """Equity recorded at the last close before `before` (YYYY-MM-DD)."""
+        p = self.dir / "equity.jsonl"
+        if not p.exists():
+            return None
+        rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]
+        rows = [r for r in rows if r.get("date", "") < before and r.get("equity")]
+        return float(rows[-1]["equity"]) if rows else None
+
+    def _guard(self, orders: list[dict], equity: float, last_date: str) -> str | None:
+        """Why this batch must not go out, or None. Checked before every order run."""
+        live = self.mode in self.LIVE_MODES
+        if live and not self.cfg.max_order_usd:
+            return "실계좌는 주문 한도(MAX_ORDER_USD)를 .env 에 정해야 주문합니다."
+        limit = self.cfg.max_order_usd or equity
+        too_big = [o for o in orders if o["value"] > limit]
+        if too_big:
+            return (f"주문 한도 초과로 차단: {too_big[0]['symbol']} ${too_big[0]['value']:,.0f}"
+                    f" (한도 ${limit:,.0f})")
+        prev = self._prev_equity(last_date)
+        if self.cfg.max_daily_loss and prev and equity / prev - 1 <= -self.cfg.max_daily_loss:
+            return (f"하루 손실 한도 초과로 오늘은 주문하지 않았습니다: 전날 ${prev:,.0f} → 지금 "
+                    f"${equity:,.0f} ({(equity / prev - 1) * 100:+.1f}%, 한도 "
+                    f"-{self.cfg.max_daily_loss * 100:.0f}%). 내일 다시 확인합니다.")
+        return None
+
+    def _announce(self, orders: list[dict]) -> None:
+        if self.mode not in self.LIVE_MODES or not self.notify:
+            return
+        lines = [f"· {'매수' if o['side'] == 'buy' else '매도'} {o['symbol']} {o['qty']}주 "
+                 f"(약 ${o['value']:,.0f})" for o in orders]
+        try:
+            self.notify("💰 Mintory 실계좌 주문을 보냅니다\n" + "\n".join(lines))
+        except Exception:  # noqa: BLE001 - an alert must never stop or crash trading
+            pass
+
     # -- main -----------------------------------------------------------------
     def run(self, close: pd.DataFrame | None = None, now: datetime | None = None,
             execute: bool = True) -> dict:
@@ -382,12 +427,9 @@ class Runner:
         if due:
             orders = plan_orders(weights, prices, positions, cash, self.cfg)
             equity = cash + sum(p["qty"] * prices.get(s, 0.0) for s, p in positions.items())
-            limit = self.cfg.max_order_usd or equity
-            too_big = [o for o in orders if o["value"] > limit]
-            if too_big:
-                alerts.append({"level": "error", "message":
-                               f"주문 한도 초과로 차단: {too_big[0]['symbol']} "
-                               f"${too_big[0]['value']:,.0f}"})
+            blocked = self._guard(orders, equity, str(last.date())) if orders else None
+            if blocked:
+                alerts.append({"level": "error", "message": blocked})
             elif not execute:
                 for o in orders:
                     alerts.append({"level": "info", "message":
@@ -395,6 +437,7 @@ class Runner:
             else:
                 sleeve_of = {t["symbol"]: t["sleeve"] for t in targets}
                 meta["fee_batch"] = {"time": now.isoformat(timespec="seconds"), "cash_before": cash}
+                self._announce(orders)
                 all_ok = True
                 for o in orders:
                     res = self.broker.place_order(o["symbol"], o["side"], o["qty"], o["ref_price"])

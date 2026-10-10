@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -42,17 +43,18 @@ def main() -> None:
     ap.add_argument("--no-dashboard", action="store_true", help="대시보드를 새로 만들지 않음")
     args = ap.parse_args()
 
-    cfg = TraderConfig(aggr_share=args.aggr_share, **STRATEGIES[args.strategy])
+    load_env()
+    cfg = TraderConfig(aggr_share=args.aggr_share, **STRATEGIES[args.strategy], **safety_limits())
     if args.mode == "sim":
         broker = SimBroker(cfg.state_dir / "sim_account.json", starting_cash=args.sim_cash)
     else:
-        load_env()
         broker = KiwoomBroker.from_env(mock=True, exchanges={
             "SPY": "NY", "IWM": "NY", "EFA": "NY", "GLD": "NY", "IEF": "ND",
             "TLT": "ND", "QQQ": "ND", "TQQQ": "ND", "UPRO": "NY"})
 
     mode = "simulate" if args.mode == "sim" else "kiwoom_mock"
-    status = Runner(broker, cfg, mode=mode).run(execute=not args.check)
+    from quant import notify
+    status = Runner(broker, cfg, mode=mode, notify=notify.send).run(execute=not args.check)
     print(f"전략: {status['strategy']['name']}  모드: {status['mode']}")
     print(f"신호 기준일: {status['signal']['as_of']}  마지막 리밸런싱: {status['last_rebalance']}")
     print(f"현금: {status['cash']}")
@@ -63,6 +65,26 @@ def main() -> None:
     print("자세한 상태: paper/state.json")
     if not args.no_dashboard:
         build_dashboard(cfg.state_dir, open_browser=args.open)
+
+
+def safety_limits(env=None) -> dict:
+    """Order limits from .env: MAX_ORDER_USD (one order, dollars) and
+    MAX_DAILY_LOSS_PCT (skip the day's orders after a drop this big, percent;
+    0 turns it off). Blank or unreadable values keep the defaults."""
+    env = os.environ if env is None else env
+    out = {}
+    try:
+        if env.get("MAX_ORDER_USD", "").strip():
+            out["max_order_usd"] = float(env["MAX_ORDER_USD"].replace(",", "").replace("$", ""))
+    except ValueError:
+        print("[경고] .env 의 MAX_ORDER_USD 를 숫자로 읽지 못해 기본값을 씁니다.")
+    try:
+        if env.get("MAX_DAILY_LOSS_PCT", "").strip():
+            pct = float(env["MAX_DAILY_LOSS_PCT"].replace("%", ""))
+            out["max_daily_loss"] = pct / 100 if pct > 0 else None
+    except ValueError:
+        print("[경고] .env 의 MAX_DAILY_LOSS_PCT 를 숫자로 읽지 못해 기본값(10%)을 씁니다.")
+    return out
 
 
 def build_dashboard(data_dir: Path, open_browser: bool = False) -> None:
