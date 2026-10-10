@@ -30,7 +30,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -244,6 +244,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
         if path == "/api/status":
             return self._json(200, control_state())
+        if path == "/api/quotes":
+            from quant import live
+            symbols = live.clean_symbols(parse_qs(urlsplit(self.path).query).get("symbols", [""])[0])
+            return self._json(200, live.quotes(symbols))
         self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:

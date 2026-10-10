@@ -131,3 +131,14 @@ def test_port_taken_spots_an_old_agent_that_binds_without_serving(server):
         assert agent.port_taken() and not agent.agent_alive()
     finally:
         held.close()
+
+
+def test_quotes_endpoint_cleans_symbols(server, monkeypatch):
+    from quant import live
+    seen = []
+    monkeypatch.setattr(live, "quotes", lambda symbols: seen.append(symbols) or {"quotes": {}, "as_of": None})
+    url, *_ = server
+    code, body = call(url + "/api/quotes?symbols=qqq,UPRO,%3Cx%3E")
+    assert code == 200 and json.loads(body)["quotes"] == {}
+    assert seen == [["QQQ", "UPRO"]]
+    assert call(url + "/api/quotes?symbols=QQQ", headers={"Host": "evil.example"})[0] == 403
