@@ -67,9 +67,10 @@
 | `cash`, `positions` | ✓ | 키움 잔고 조회 결과(또는 가상 장부). `last_price`는 마지막 종가 |
 | `positions[].sleeve` | | 한 종목이 두 바구니에 걸치면 `targets`를 기준으로 표시하므로 생략 가능 |
 | `targets` | | 지금 목표 비중. 같은 종목이 두 바구니에 있으면 두 줄 |
-| `next_rebalance` | | `signal_date` = 신호 계산일(월말 장 마감), `order_date` = 주문일 |
+| `next_rebalance` | | `signal_date` = 신호 계산일(월말 장 마감, 분할 전략이면 다음 분할일), `order_date` = 주문일 |
 | `signal.scores` | | 바구니별 후보의 점수(`return`)와 선택 여부. `lookbacks`가 있으면 그 기간들 수익률의 평균(평균 모멘텀) |
 | `signal.lookbacks` | | 점수에 쓴 기간(거래일). 없으면 `lookback_days` 한 기간 수익률로 표시 |
+| `signal.canary` | | 카나리아 전략에서만. `[{symbol, score, risk_on}]`: 신호 종목의 가중 모멘텀과 위험 신호 여부(`risk_on`이 false면 그날 리밸런싱하는 덩어리는 IEF) |
 | `alerts` | | `level`: `info` · `warn` · `error` |
 
 ## trades.jsonl (한 줄 = 주문 하나)

@@ -143,3 +143,34 @@ def test_vol_target_lowers_leverage(blend_prices):
     plain = momentum_blend(blend_prices)[["QQQ3X", "SPY3X"]].sum(axis=1)
     capped = momentum_blend(blend_prices, vol_target=0.2)[["QQQ3X", "SPY3X"]].sum(axis=1)
     assert (capped <= plain + 1e-9).all() and capped.mean() < plain.mean()
+
+
+@pytest.mark.parametrize("name,opts", [
+    ("tranched", {"lookbacks": [21, 63, 126, 252]}),
+    ("core_satellite", {"core_share": 0.3}),
+    ("canary_gate", {"canary": ["EFA", "TLT"]}),
+    ("canary_gate", {"canary": ["EFA"], "signal": "12m"}),
+    ("canary_gate", {"canary": ["EFA"], "signal": "avg"}),
+])
+def test_research_wrappers_no_lookahead(blend_prices, name, opts):
+    from quant.strategies import REGISTRY
+    w = REGISTRY[name](blend_prices, **opts)
+    assert (w.sum(axis=1) <= 1 + 1e-9).all()
+    assert (w >= -1e-12).all().all()
+    bumped = blend_prices.copy()
+    bumped.iloc[-10:] *= 2
+    pd.testing.assert_frame_equal(w.iloc[:-30], REGISTRY[name](bumped, **opts).iloc[:-30])
+
+
+def test_one_tranche_is_plain_blend(blend_prices):
+    from quant.strategies import momentum_blend, tranched
+    pd.testing.assert_frame_equal(tranched(blend_prices, tranches=1), momentum_blend(blend_prices))
+
+
+def test_tranche_offset_shifts_rebalance_day(blend_prices):
+    from quant.strategies import momentum_blend
+    w0 = momentum_blend(blend_prices).diff().abs().sum(axis=1)
+    w5 = momentum_blend(blend_prices, offset=5).diff().abs().sum(axis=1)
+    i0 = blend_prices.index.get_indexer(w0[w0 > 0].index[1:5])
+    i5 = blend_prices.index.get_indexer(w5[w5 > 0].index[1:5])
+    assert set(i5) - set(i0)  # trades land on different days

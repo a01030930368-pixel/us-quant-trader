@@ -1,0 +1,25 @@
+# Actions 탭 -> canary -> Run workflow: 카나리아 EEM 검증 리포트를 만듭니다.
+name: canary
+on:
+  # Also runs automatically when the experiment or strategy code changes.
+  push:
+    paths:
+      - "scripts/validate_canary.py"
+      - "quant/strategies.py"
+      - ".github/workflows/canary.yml"
+  workflow_dispatch:
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python scripts/validate_canary.py
+      - run: cat reports/canary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: canary
+          path: reports/

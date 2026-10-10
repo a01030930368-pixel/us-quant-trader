@@ -282,3 +282,96 @@ def test_pending_trades_settle_from_balance(tmp_path, close):
     assert got == {("QQQ", "filled", 750.185), ("UPRO", "partial", 155.0),
                    ("IEF", "filled", 95.0), ("GLD", "rejected", 300.0),
                    ("TQQQ", "pending", 80.0)}
+
+
+# -- EEM canary + 4 tranches ---------------------------------------------------
+
+def canary_close(close, eem_up=True):
+    px = close.copy()
+    step = 0.001 if eem_up else -0.001
+    px["EEM"] = 100 * np.cumprod(np.full(len(px), 1 + step))
+    return px
+
+
+def canary_runner(tmp_path):
+    cfg = TraderConfig(state_dir=tmp_path / "paper", canary=("EEM",), tranches=4)
+    return Runner(SimBroker(cfg.state_dir / "sim_account.json", starting_cash=10_000.0), cfg)
+
+
+def test_canary_targets_match_backtest_strategy(close):
+    from quant.strategies import tranched
+    from quant.trader.runner import staggered_targets
+
+    px = canary_close(close)
+    cfg = TraderConfig(canary=("EEM",), tranches=4)
+    rows, sig = staggered_targets(px, pd.Timestamp("2026-10-09"), cfg)
+    assert sig == pd.Timestamp("2026-10-08")
+    got = {}
+    for t in rows:
+        got[t["symbol"]] = got.get(t["symbol"], 0.0) + t["weight"]
+    full = pd.concat([px.loc[:"2026-10-08"], px.loc[["2026-10-08"]].set_axis(
+        [pd.Timestamp("2026-10-09")])])
+    want = tranched(full, strategy="canary_gate", canary=["EEM"], lookbacks=[21, 63, 126, 252],
+                    stable_assets=["SPY", "QQQ", "IWM", "EFA", "GLD"],
+                    aggr_assets=["TQQQ", "UPRO", "GLD", "TLT"]).loc[sig]
+    assert got == pytest.approx({k: v for k, v in want.items() if v > 1e-9})
+    assert cfg.strategy_id == "momentum_blend_multi_canary_eem_t4"
+    assert "EEM 카나리아" in cfg.strategy_name
+
+
+def test_canary_off_goes_to_safe(close):
+    from quant.trader.runner import staggered_targets
+    rows, _ = staggered_targets(canary_close(close, eem_up=False), pd.Timestamp("2026-10-09"),
+                                TraderConfig(canary=("EEM",), tranches=4))
+    assert {t["symbol"] for t in rows} == {"IEF"}
+    assert sum(t["weight"] for t in rows) == pytest.approx(1.0)
+
+
+def test_canary_ignores_todays_partial_bar(close):
+    from quant.trader.runner import staggered_targets
+    px = canary_close(close)
+    cfg = TraderConfig(canary=("EEM",), tranches=4)
+    base, _ = staggered_targets(px.loc[:"2026-10-07"], pd.Timestamp("2026-10-08"), cfg)
+    spiked = px.loc[:"2026-10-08"].copy()
+    spiked.iloc[-1] *= 3  # today's half-finished bar must not matter
+    got, sig = staggered_targets(spiked, pd.Timestamp("2026-10-08"), cfg)
+    assert sig == pd.Timestamp("2026-10-07") and got == base
+
+
+def test_canary_runner_trades_only_when_target_changes(tmp_path, close):
+    px = canary_close(close)
+    r = canary_runner(tmp_path)
+    s = r.run(close=px.loc[:"2026-10-07"], now=datetime(2026, 10, 8, 15, tzinfo=timezone.utc))
+    first = trades(r)
+    assert first and s["strategy"]["id"] == "momentum_blend_multi_canary_eem_t4"
+    assert s["signal"]["canary"][0]["symbol"] == "EEM" and s["signal"]["canary"][0]["risk_on"]
+    assert "분할" in first[0]["note"]
+    # next day, no tranche date in between: nothing new to trade
+    r.run(close=px.loc[:"2026-10-08"], now=datetime(2026, 10, 9, 15, tzinfo=timezone.utc))
+    assert len(trades(r)) == len(first)
+
+
+def test_switching_strategy_archives_old_records_and_rebalances(tmp_path, close):
+    px = canary_close(close)
+    old = make_runner(tmp_path)
+    old.run(close=px.loc[:"2026-10-07"], now=datetime(2026, 10, 8, 15, tzinfo=timezone.utc))
+    held_before = old.broker.positions()
+    meta = json.loads((old.dir / "meta.json").read_text(encoding="utf-8"))
+    meta.pop("strategy_id")  # records written before strategy_id existed
+    (old.dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    new = canary_runner(tmp_path)
+    new.run(close=px.loc[:"2026-10-08"], now=datetime(2026, 10, 9, 15, tzinfo=timezone.utc),
+            execute=False)  # a check run changes nothing
+    assert not (new.dir / "archive").exists()
+
+    s = new.run(close=px.loc[:"2026-10-08"], now=datetime(2026, 10, 9, 15, tzinfo=timezone.utc))
+    arch = new.dir / "archive" / "momentum_blend_multi_2026-10-10"
+    assert (arch / "trades.jsonl").exists() and (arch / "equity.jsonl").exists()
+    assert s["started_at"] == "2026-10-10"
+    assert s["strategy"]["id"] == "momentum_blend_multi_canary_eem_t4"
+    fresh = trades(new)
+    assert fresh and all(t["note"] == "분할 리밸런싱" for t in fresh)
+    assert {t["symbol"] for t in fresh} <= set(held_before) | {t["symbol"] for t in s["targets"]}
+    meta = json.loads((new.dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["strategy_id"] == "momentum_blend_multi_canary_eem_t4"
