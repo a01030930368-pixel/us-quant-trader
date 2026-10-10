@@ -16,6 +16,8 @@ Mintory 화면의 버튼(잔고 새로고침, 지금 매매 실행, 일시정지
 - 화면은 http://127.0.0.1:47321 에서 보여준다. 이 주소는 이 PC 안에서만 열린다.
   같은 포트가 "이미 켜져 있음" 표시도 겸해서, 한 번에 하나만 돈다.
 - 일시정지는 paper/STOP 파일을 만들고 지우는 것과 같다(실행기가 STOP이 있으면 주문을 안 냄).
+- 화~토 아침 7시에 잔고를 한 번 새로 읽어 전날 기록을 장 마감 가격으로 맞춘다(주문 없음).
+  밤 23:45 실행은 장중 가격이라서. 7시에 PC가 꺼져 있었으면 그날 켜질 때 한다.
 - 토요일 아침 7시(금요일 미국장 마감 뒤)에 잔고를 새로 불러와 주간 리포트를 텔레그램으로 보낸다.
   그때 PC가 꺼져 있었으면 주말 중 켜질 때 보낸다. .env 에 NOTIFY_WEEKLY=0 이면 끈다.
 - 텔레그램이 연결돼 있으면 휴대폰 명령(/balance, /refresh, /status, /pause, /resume)에 답한다
@@ -169,6 +171,29 @@ def weekly_due(now: datetime, last_week: str | None) -> str | None:
     return friday if friday != last_week else None
 
 
+CLOSE_AT = 7  # KST hour; the US session that the 23:45 run saw mid-day has closed by then
+
+
+def close_refresh_due(now: datetime, last: str | None) -> str | None:
+    """Today's date (KST) when the previous evening was a US session and its closing
+    balance has not been recorded yet. The 23:45 run records mid-session prices; this
+    morning balance check rewrites that day's row with the closing prices (no orders)."""
+    now = now.astimezone(KST)
+    day = now.date().isoformat()
+    if not (CLOSE_AT <= now.hour and (now.hour, now.minute) < RUN_AT) or day == last:
+        return None
+    evening = (now - timedelta(days=1)).date().isoformat()
+    return day if is_trading_evening(evening) else None
+
+
+def record_close(day: str) -> None:
+    """Balance check after the US close, so the day's record uses closing prices."""
+    with _job_lock:
+        result = _run_job("refresh")
+    log(f"장 마감 잔고 기록: {result}")
+    update_state(close_day=day)
+
+
 BACKUP_AT = 7  # KST hour; the night's run and fills are final by then
 BACKUPS = ROOT / "backups"
 
@@ -267,6 +292,35 @@ _job_lock = threading.Lock()
 _job: dict = {"name": None, "started": None}
 
 
+def failure_reason(text: str) -> str:
+    """One readable line from a failed run's output: the exception message, else the last line."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        head, sep, msg = ln.partition(": ")
+        if sep and head.split(".")[-1].endswith(("Error", "Exception")) and " " not in head:
+            return msg[:160]
+    for ln in reversed(lines):
+        if "[오류]" in ln or "[경고]" in ln:
+            return ln[:160]
+    return lines[-1][:160] if lines else ""
+
+
+def _log_size() -> int:
+    try:
+        return LOG.stat().st_size
+    except OSError:
+        return 0
+
+
+def _log_since(pos: int) -> str:
+    try:
+        with open(LOG, "rb") as f:
+            f.seek(pos)
+            return f.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
 def _run_job(name: str, notify_done: bool = True) -> str:
     """Run a job while holding _job_lock; returns "ok" or an error text."""
     _job.update(name=name, started=now_iso())
@@ -274,18 +328,21 @@ def _run_job(name: str, notify_done: bool = True) -> str:
                  checked_at=_job["started"])
     log(f"{JOB_NAMES[name]} 시작")
     trades_before = count_lines(PAPER / "trades.jsonl")
+    pos, reason = _log_size(), ""
     try:
         code = run_trader(JOBS.get(name, JOBS["run"]))
         result = "ok" if code == 0 else f"error (exit {code})"
+        if code != 0:
+            reason = failure_reason(_log_since(pos))
     except Exception as e:  # noqa: BLE001 - a failed run must not kill the agent
-        result = f"error ({e})"
+        result, reason = f"error ({e})", str(e)[:160]
     log(f"{JOB_NAMES[name]} 종료: {result}")
     if name not in READ_ONLY_JOBS and notify_done:
         from quant import notify
         if notify.notify_run(name, result, PAPER, trades_before):
             log("휴대폰 알림 보냄")
     update_state(agent="running", job=None,
-                 last_job={"name": name, "finished": now_iso(), "result": result})
+                 last_job={"name": name, "finished": now_iso(), "result": result, "reason": reason})
     _job.update(name=None, started=None)
     return result
 
@@ -343,7 +400,8 @@ def run_auto(now: datetime, attempt: int = 0) -> str:
         update_state(retry=None)
         if notify.notify_run("auto", result, PAPER, before):
             log("휴대폰 알림 보냄")
-    update_state(last_day=day, last_run=now.isoformat(timespec="seconds"), last_result=result)
+    update_state(last_day=day, last_run=now.isoformat(timespec="seconds"), last_result=result,
+                 last_reason=(read_state().get("last_job") or {}).get("reason", ""))
     send_preview(day)
     if not read_state().get("retry"):
         rehearse(day)
@@ -578,6 +636,10 @@ def loop(restarted: bool = False) -> None:
         elif (attempt := retry_due(now, retry)) is not None:
             run_auto(now, attempt)
             state = read_state()
+        close = close_refresh_due(now, state.get("close_day"))
+        if close:
+            record_close(close)
+            state = read_state()
         week = weekly_due(now, state.get("weekly_sent"))
         if week:
             send_weekly(week)
@@ -597,8 +659,9 @@ def send_weekly(week: str) -> None:
     """Refresh the balance at Friday's close, then send the weekly report (once per week)."""
     from quant import notify
     if notify.configured() and notify.settings()["weekly"]:
-        with _job_lock:
-            _run_job("refresh")
+        if read_state().get("close_day") != datetime.now(KST).date().isoformat():
+            with _job_lock:  # this morning's close check already refreshed otherwise
+                _run_job("refresh")
         if notify.notify_weekly(week, PAPER):
             log(f"주간 리포트 보냄 ({week} 주)")
     update_state(weekly_sent=week)

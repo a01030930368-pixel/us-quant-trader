@@ -457,9 +457,12 @@ class Runner:
         meta = self._read("meta.json")
         alerts: list[dict] = []
 
-        if (self.dir / "STOP").exists():
+        # Paused: no orders, but the balance and the day's equity row are still
+        # recorded so the history has no gaps (a --check run with a red flag).
+        paused = (self.dir / "STOP").exists()
+        if paused:
             alerts.append({"level": "error", "message": "STOP 파일이 있어 매매를 멈췄습니다."})
-            return self._state(now, meta, alerts=alerts)
+            execute = False
 
         fx_source = self.fx_source
         if close is None:
@@ -516,6 +519,8 @@ class Runner:
             blocked = self._guard(orders, equity, str(last.date())) if orders else None
             if blocked:
                 alerts.append({"level": "error", "message": blocked})
+            elif paused:
+                pass  # the STOP alert above already says why nothing was ordered
             elif not execute:
                 self.planned = orders
                 for o in orders:
