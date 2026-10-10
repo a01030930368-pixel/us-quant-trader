@@ -375,3 +375,41 @@ def test_switching_strategy_archives_old_records_and_rebalances(tmp_path, close)
     assert {t["symbol"] for t in fresh} <= set(held_before) | {t["symbol"] for t in s["targets"]}
     meta = json.loads((new.dir / "meta.json").read_text(encoding="utf-8"))
     assert meta["strategy_id"] == "momentum_blend_multi_canary_eem_t4"
+
+
+def test_fee_is_taken_from_cash_once_the_batch_settles(tmp_path, close):
+    r = make_runner(tmp_path)
+    t = "2026-10-10T00:18:00+09:00"
+    rows = [
+        {"time": t, "symbol": "QQQ", "side": "buy", "qty": 10, "price": 750.0, "fee": 0.0, "status": "pending"},
+        {"time": t, "symbol": "IEF", "side": "sell", "qty": 50, "price": 100.0, "fee": 0.0, "status": "filled"},
+        {"time": t, "symbol": "GLD", "side": "buy", "qty": 5, "price": 300.0, "fee": 0.0, "status": "rejected"},
+    ]
+    (r.dir / "trades.jsonl").write_text("".join(json.dumps(x) + "\n" for x in rows), encoding="utf-8")
+    meta = {"fee_batch": {"time": t, "cash_before": 10_000.0}}
+    # buy 7,500 - sell 5,000 = 2,500 out; 31.25 more left = 0.25% of 12,500 traded
+    r._settle_fees(meta, 7_468.75)
+    assert "fee_batch" in meta and all(x["fee"] == 0 for x in trades(r))  # QQQ still pending
+    r._reconcile({"QQQ": {"qty": 10, "avg_price": 750.0}})
+    r._settle_fees(meta, 7_468.75)
+    fees = {x["symbol"]: x["fee"] for x in trades(r)}
+    assert fees == {"QQQ": 18.75, "IEF": 12.5, "GLD": 0.0} and "fee_batch" not in meta
+
+
+def test_fee_ignores_cash_moves_that_are_not_fees(tmp_path, close):
+    r = make_runner(tmp_path)
+    t = "2026-10-10T00:18:00+09:00"
+    (r.dir / "trades.jsonl").write_text(json.dumps(
+        {"time": t, "symbol": "QQQ", "side": "buy", "qty": 10, "price": 750.0, "fee": 0.0,
+         "status": "filled"}) + "\n", encoding="utf-8")
+    meta = {"fee_batch": {"time": t, "cash_before": 10_000.0}}
+    r._settle_fees(meta, 3_000.0)  # 500 more than a fee could be
+    assert trades(r)[0]["fee"] == 0 and "fee_batch" not in meta
+
+
+def test_simulated_run_keeps_its_own_fees(tmp_path, close):
+    r = make_runner(tmp_path)
+    r.run(close, execute=True, now=datetime(2026, 10, 8, 23, 0, tzinfo=timezone.utc))
+    tr = trades(r)
+    assert tr and all(x["fee"] > 0 for x in tr)
+    assert "fee_batch" not in json.loads((r.dir / "meta.json").read_text(encoding="utf-8"))
