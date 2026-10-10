@@ -31,7 +31,14 @@ python scripts/run_trader.py --mode kiwoom           # 실제 모의 주문
 - 다음 실행 시각 확인: `python scripts/mintory_agent.py --status`
 - 윈도우 시작 시 자동 실행 해제: `python scripts/mintory_agent.py --uninstall-startup`
 
-## 5. 긴급 정지
+## 5. 업데이트 (update.bat 더블클릭)
+`update.bat`을 더블클릭하면 GitHub의 최신 코드를 받아 이 폴더에 덮어씁니다. ZIP을 받아 `.env`와 `paper` 폴더를 옮겨 붙일 필요가 없습니다.
+- `.env`, `paper/`(매매 기록), `reports/`, `data_cache/`는 건드리지 않습니다.
+- 처음 한 번은 GitHub 읽기 전용 토큰이 필요합니다. 없으면 만드는 방법이 화면에 나오고 GitHub 페이지가 열립니다. 만든 토큰은 `.env`에 `GITHUB_TOKEN=...` 한 줄로 넣습니다.
+- 자동 실행기가 매매 중이면 업데이트하지 않습니다. 켜져 있으면 1분 안에 새 코드로 스스로 다시 켜집니다.
+- 새 버전이 있는지만 보기: `python scripts/update.py --check`
+
+## 6. 긴급 정지
 `paper` 폴더에 `STOP`이라는 이름의 빈 파일을 만들면 그 뒤로는 주문을 내지 않습니다. 파일을 지우면 다시 동작합니다.
 
 ## 안전장치

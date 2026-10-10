@@ -39,6 +39,8 @@ python dashboard/build.py --sample   # 샘플 데이터로 보기
 
 결과 파일은 `reports/dashboard.html`에 저장됩니다. 브라우저에서 F11(전체화면)으로 보면 한 화면에 모두 들어옵니다. 기록 형식은 `docs/paper-format.md`를 보세요.
 
+새 버전이 나오면 `update.bat`을 더블클릭하세요. `.env`와 `paper/` 기록은 그대로 두고 코드만 최신으로 바꿉니다(처음 한 번 GitHub 토큰 필요, `docs/trader-guide.md` 5번).
+
 바탕화면에 Mintory 아이콘을 만들려면 `create_shortcut.bat`을 한 번 더블클릭하세요. 아이콘으로 열면 주소창 없는 앱 창으로 뜹니다.
 
 ## 순위 규칙

@@ -6,3 +6,4 @@ data_cache/
 reports/
 .pytest_cache/
 paper/
+.mintory-update.json
