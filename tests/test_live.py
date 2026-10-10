@@ -14,6 +14,7 @@ def bars():
 def test_clean_symbols_keeps_valid_tickers_only():
     assert live.clean_symbols(" qqq,TQQQ,qqq,,brk.b,<script>,1ABC") == ["QQQ", "TQQQ", "BRK.B"]
     assert len(live.clean_symbols(",".join(f"A{i}" for i in range(30)))) == live.MAX_SYMBOLS
+    assert live.clean_symbols("^gspc,^VIX,^^X,^1") == ["^GSPC", "^VIX"]
 
 
 def test_summarize_uses_last_session_against_previous_close():

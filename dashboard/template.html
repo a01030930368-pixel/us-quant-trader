@@ -87,6 +87,25 @@ body {
 .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: #45d0b8; box-shadow: 0 0 0 3px rgba(69, 208, 184, 0.18); }
 .badge.sample { color: var(--warn); background: rgba(255, 181, 71, 0.1); }
 .badge.stale { color: var(--up); background: var(--up-bg); }
+/* 로고 옆 시장 지수 (S&P 500 · 나스닥 · VIX) */
+.indices { display: flex; align-items: center; gap: 22px; min-width: 0; }
+.ix { display: grid; gap: 1px; }
+.ix .n { font-size: 11.5px; color: var(--dim); font-weight: 500; white-space: nowrap; }
+.ix .v { display: flex; align-items: baseline; gap: 7px; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
+.ix .c { font-size: 12.5px; font-weight: 600; }
+.ix svg { width: 54px; height: 18px; align-self: center; }
+@media (max-width: 1500px) { .ix svg { display: none; } .indices { gap: 16px; } }
+/* 앱 상태 불: 초록 정상, 노랑 일시정지, 빨강 확인 필요 */
+.led-wrap { position: relative; flex: none; }
+.led { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--line); cursor: pointer; padding: 0; }
+.led i { width: 9px; height: 9px; border-radius: 50%; background: #45d0b8; box-shadow: 0 0 0 4px rgba(69, 208, 184, 0.18), 0 0 10px rgba(69, 208, 184, 0.55); }
+.led.paused i { background: var(--warn); box-shadow: 0 0 0 4px rgba(255, 181, 71, 0.18), 0 0 10px rgba(255, 181, 71, 0.5); }
+.led.bad i { background: var(--up); box-shadow: 0 0 0 4px var(--up-bg), 0 0 10px rgba(255, 77, 94, 0.6); animation: led-blink 1.6s ease-in-out infinite; }
+@keyframes led-blink { 50% { opacity: 0.45; } }
+.led-pop { position: absolute; top: 42px; right: 0; z-index: 40; min-width: 270px; max-width: 380px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: grid; gap: 6px; font-size: 12.5px; color: var(--sub); box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55); }
+.led-pop b { color: var(--text); font-size: 13.5px; font-weight: 600; }
+.led-pop .issue { color: var(--up); }
+.led-pop .warn { color: var(--warn); }
 
 .workspace {
   display: grid;
@@ -404,10 +423,11 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       </div>
     </div>
     <div class="divider" aria-hidden="true"></div>
-    <div class="title">
+    <div class="title" id="title-strat">
       <span class="app-name">운용 전략 · 모의투자</span>
       <h1 id="strategy-name">모의투자 대시보드</h1>
     </div>
+    <div class="indices" id="indices" hidden></div>
     <div class="top-right" id="badges"></div>
     <div class="controls" id="controls" hidden>
       <button type="button" class="ctl" id="btn-refresh" title="키움 모의계좌 잔고를 다시 읽어요. 주문은 내지 않아요.">
@@ -600,33 +620,59 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
   // ---- top bar ----
   $("strategy-name").textContent = strat.name || "모의투자 대시보드";
   document.title = "Mintory" + (strat.name ? " · " + strat.name : "");
-  var badges = [];
+  // 오른쪽 위: 샘플 표시만 배지로 남기고, 실행 상태는 작은 불 하나로 (누르면 자세히)
+  var badges = [], issues = [], info = [];
   if (META.source === "sample") badges.push('<span class="badge sample">샘플 데이터</span>');
   (S.alerts || []).forEach(function (a) {
-    if (DATA.control && /^STOP 파일/.test(a.message || "")) return;  // shown as the paused badge
-    if (a.level === "warn" || a.level === "error") badges.push('<span class="badge stale" title="' + esc(a.message) + '">' + (a.level === "error" ? "오류 · " : "주의 · ") + esc(a.message) + "</span>");
+    if (/^STOP 파일/.test(a.message || "")) return;  // the light turns yellow instead
+    if (a.level === "warn" || a.level === "error") issues.push((a.level === "error" ? "오류 · " : "주의 · ") + a.message);
   });
-  badges.push('<span class="badge"><span class="dot"></span>' + esc(MODES[S.mode] || S.mode || "모의투자") + "</span>");
+  info.push(MODES[S.mode] || S.mode || "모의투자");
   var AG = DATA.agent;
-  if (AG && (AG.next_run || AG.last_run)) {
-    var mdhm = function (iso) { var m = /^\d{4}-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso || ""); return m ? (+m[1]) + "/" + (+m[2]) + " " + m[3] + ":" + m[4] : ""; };
-    var failed = AG.last_result && AG.last_result !== "ok";
-    var parts = [];
-    if (AG.next_run) parts.push("다음 자동 실행 " + mdhm(AG.next_run));
-    if (AG.last_run) parts.push("마지막 실행 " + (failed ? "실패" : "OK"));
-    badges.push('<span class="badge' + (failed ? " stale" : "") + '" title="' + esc((AG.last_run ? "마지막 실행 " + mdhm(AG.last_run) + " · " + (AG.last_result || "") : "") + (AG.checked_at ? " · 확인 " + mdhm(AG.checked_at) : "")) + '">' +
-      '<span class="dot"' + (failed ? ' style="background:var(--up);box-shadow:0 0 0 3px var(--up-bg)"' : "") + "></span>" + esc(parts.join(" · ")) + "</span>");
+  var mdhm = function (iso) { var m = /^\d{4}-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso || ""); return m ? (+m[1]) + "/" + (+m[2]) + " " + m[3] + ":" + m[4] : ""; };
+  if (AG && AG.next_run) info.push("다음 자동 실행 " + mdhm(AG.next_run));
+  if (AG && AG.last_run) {
+    if (AG.last_result && AG.last_result !== "ok") issues.push("마지막 자동 실행 실패 (" + mdhm(AG.last_run) + " · " + AG.last_result + ")");
+    else info.push("마지막 실행 " + mdhm(AG.last_run) + " OK");
   }
   if (AG && AG.missed && AG.missed.length) {
     var mdKo = function (d) { var dt = new Date(d + "T00:00:00"); return (+d.slice(5, 7)) + "/" + (+d.slice(8, 10)) + "(" + "일월화수목금토"[dt.getDay()] + ")"; };
-    badges.push('<span class="badge stale" title="' + esc("PC가 꺼져 있었거나 잠자기 상태라 " + AG.missed.map(mdKo).join(", ") + " 밤 자동 실행을 못 했어요. 밀린 주문은 다음 자동 실행 때 맞춰집니다.") + '">주의 · 자동 실행 놓침 ' + esc(AG.missed.map(mdKo).join(", ")) + "</span>");
+    issues.push("자동 실행 놓침 " + AG.missed.map(mdKo).join(", ") + " · 밀린 주문은 다음 자동 실행 때 맞춰져요");
   }
   if (S.updated_at) {
     var age = days(parseDate(S.updated_at), today());
-    badges.push('<span class="badge" title="기록 폴더: ' + esc(META.dir || "paper/") + '">' + ymd(S.updated_at) + " " + hm(S.updated_at) + " 업데이트</span>");
-    if (META.source !== "sample" && age >= 4) badges.push('<span class="badge stale">' + age + "일째 갱신 없음</span>");
+    info.push("기록 업데이트 " + ymd(S.updated_at) + " " + hm(S.updated_at));
+    if (META.source !== "sample" && age >= 4) issues.push(age + "일째 기록 갱신 없음");
   }
+  if (AG && AG.backup_day) info.push("마지막 기록 백업 " + AG.backup_day);
+  var LED = { paused: !!(DATA.control && DATA.control.paused) || (S.alerts || []).some(function (a) { return /^STOP 파일/.test(a.message || ""); }) };
+  badges.push('<span class="led-wrap"><button type="button" class="led" id="status-led" aria-haspopup="true" aria-expanded="false"><i></i></button></span>');
   $("badges").innerHTML = badges.join("");
+  var paintLed = function () {
+    var led = $("status-led"), bad = issues.length > 0;
+    led.className = "led" + (bad ? " bad" : LED.paused ? " paused" : "");
+    led.title = bad ? "Mintory 확인 필요 · 눌러서 보기" : LED.paused ? "일시정지 중 · 주문 안 냄" : "Mintory 정상";
+    var pop = led.parentNode.querySelector(".led-pop");
+    if (pop) pop.innerHTML = ledText();
+  };
+  var ledText = function () {
+    var head = issues.length ? "🔴 확인이 필요해요" : LED.paused ? "🟡 일시정지 중 · 주문 안 냄" : "🟢 Mintory 정상";
+    return "<b>" + head + "</b>" + issues.map(function (t) { return '<span class="issue">' + esc(t) + "</span>"; }).join("") +
+      (LED.paused && issues.length ? '<span class="warn">일시정지 중 · 주문 안 냄</span>' : "") +
+      info.map(function (t) { return "<span>" + esc(t) + "</span>"; }).join("");
+  };
+  $("status-led").addEventListener("click", function (e) {
+    e.stopPropagation();
+    var wrap = this.parentNode, pop = wrap.querySelector(".led-pop");
+    if (pop) { pop.remove(); this.setAttribute("aria-expanded", "false"); return; }
+    wrap.insertAdjacentHTML("beforeend", '<div class="led-pop" role="dialog">' + ledText() + "</div>");
+    this.setAttribute("aria-expanded", "true");
+  });
+  document.addEventListener("click", function (e) {
+    var pop = document.querySelector(".led-pop");
+    if (pop && !pop.contains(e.target)) { pop.remove(); $("status-led").setAttribute("aria-expanded", "false"); }
+  });
+  paintLed();
 
   // ---- KPI strip ----
   function renderKpis() {
@@ -1340,6 +1386,46 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     pollLive();
   }
 
+  // ---- 로고 옆 시장 지수: S&P 500 · 나스닥 · VIX (자동 실행기가 켜져 있을 때) ----
+  var INDEX = [["^GSPC", "S&P 500"], ["^IXIC", "나스닥"], ["^VIX", "VIX 공포지수"]];
+  if (/^https?:$/.test(location.protocol) && DATA.control) {
+    var ixTimer;
+    var ixSpark = function (pts, col) {
+      if (!pts || pts.length < 2) return "";
+      var lo = Math.min.apply(null, pts), hi = Math.max.apply(null, pts), sp = hi - lo || 1;
+      return '<svg viewBox="0 0 54 18" aria-hidden="true"><polyline fill="none" stroke="' + col + '" stroke-width="1.5" stroke-linejoin="round" points="' +
+        pts.map(function (v, i) { return (i * 54 / (pts.length - 1)).toFixed(1) + "," + (16 - (v - lo) / sp * 14).toFixed(1); }).join(" ") + '"/></svg>';
+    };
+    var paintIndices = function (q) {
+      var html = INDEX.map(function (ix) {
+        var d = q[ix[0]];
+        if (!d) return "";
+        var ch = d.change, col = ch > 0 ? "var(--up)" : ch < 0 ? "var(--down)" : "var(--sub)";
+        return '<div class="ix" title="' + esc(ix[1] + " · " + (d.session || "")) + '"><span class="n">' + esc(ix[1]) + '</span><span class="v">' +
+          Number(d.price).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) +
+          (ch == null ? "" : '<span class="c" style="color:' + col + '">' + (ch > 0 ? "▲ " : ch < 0 ? "▼ " : "") + Math.abs(ch * 100).toFixed(2) + "%</span>") +
+          ixSpark(d.spark, col) + "</span></div>";
+      }).join("");
+      if (!html) return;
+      $("indices").innerHTML = html;
+      $("indices").hidden = false;
+      $("title-strat").hidden = true;
+    };
+    var pollIndices = function () {
+      clearTimeout(ixTimer);
+      if (document.hidden) { ixTimer = setTimeout(pollIndices, 15000); return; }
+      fetch("/api/quotes?symbols=" + encodeURIComponent(INDEX.map(function (i) { return i[0]; }).join(",")), { cache: "no-store" })
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+          var q = res.quotes || {}, fresh = Object.keys(q).some(function (k) { return q[k].time && Date.now() - new Date(q[k].time).getTime() < 20 * 60 * 1000; });
+          paintIndices(q);
+          ixTimer = setTimeout(pollIndices, fresh ? 15000 : 10 * 60 * 1000);  // 장 마감 뒤에는 10분마다
+        })
+        .catch(function () { ixTimer = setTimeout(pollIndices, 60000); });
+    };
+    pollIndices();
+  }
+
   // ---- in-app controls (served by the Mintory agent at 127.0.0.1) ----
   var CTL = DATA.control;
   if (CTL && /^https?:$/.test(location.protocol)) {
@@ -1378,9 +1464,8 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       btnPause.classList.toggle("on", !!c.paused);
       btnPause.innerHTML = (c.paused ? ICON_PLAY : ICON_PAUSE) + "<span>" + (c.paused ? "다시 시작" : "일시정지") + "</span>";
       btnPause.title = c.paused ? "누르면 다시 주문을 낼 수 있어요." : "누르면 그 뒤로 주문을 내지 않아요. 자동 실행도 멈춰요.";
-      var pb = document.getElementById("badge-paused");
-      if (c.paused && !pb) $("badges").insertAdjacentHTML("afterbegin", '<span class="badge paused" id="badge-paused">일시정지됨 · 주문 안 냄</span>');
-      if (!c.paused && pb) pb.remove();
+      LED.paused = !!c.paused;
+      paintLed();
     };
     var poll = function () {
       clearTimeout(pollTimer);
