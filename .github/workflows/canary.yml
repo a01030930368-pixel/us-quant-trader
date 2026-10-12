@@ -11,6 +11,8 @@ on:
 jobs:
   canary:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,3 +25,10 @@ jobs:
         with:
           name: canary
           path: reports/
+      - name: Save daily returns CSV to this branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          mkdir -p results && cp reports/canary_daily_25bp.csv results/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add results && git commit -m "Canary daily returns from run ${{ github.run_id }}" && git push
