@@ -199,6 +199,28 @@ def test_weekly_due():
     assert agent.weekly_due(k(2026, 10, 18, 22, 0), None) == "2026-10-16"    # Sunday catch-up
     assert agent.weekly_due(k(2026, 10, 18, 22, 0), "2026-10-16") is None    # already sent
     assert agent.weekly_due(k(2026, 10, 19, 9, 0), None) is None             # Monday
+    assert agent.weekly_due(k(2026, 10, 16, 9, 0), None) is None             # Fri morning: Thu is not the end
+
+
+def test_weekly_due_friday_holiday():
+    # Good Friday 2027-03-26: Thursday is the week's last session
+    assert agent.weekly_due(k(2027, 3, 26, 6, 59), None) is None
+    assert agent.weekly_due(k(2027, 3, 26, 7, 0), None) == "2027-03-25"
+    assert agent.weekly_due(k(2027, 3, 28, 20, 0), None) == "2027-03-25"
+    assert agent.weekly_due(k(2027, 3, 29, 7, 0), None) is None
+
+
+def test_record_close_sends_close_report(tmp_path, monkeypatch):
+    from quant import notify
+    monkeypatch.setattr(agent, "STATE", tmp_path / "agent.json")
+    monkeypatch.setattr(agent, "LOG", tmp_path / "agent.log")
+    monkeypatch.setattr(agent, "PAPER", tmp_path)
+    monkeypatch.setattr(agent, "run_trader", lambda args: 0)
+    monkeypatch.setattr(notify, "notify_run", lambda *a, **kw: False)
+    sent = []
+    monkeypatch.setattr(notify, "notify_close", lambda day, paper: sent.append(day) or True)
+    agent.record_close("2026-10-14")
+    assert sent == ["2026-10-13"] and agent.read_state()["close_day"] == "2026-10-14"
 
 
 def test_send_weekly_refreshes_then_sends_once(tmp_path, monkeypatch):

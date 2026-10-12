@@ -91,6 +91,9 @@ def test_dashboard_files_written(tmp_path, close):
     assert sum(t["weight"] for t in state["targets"]) == pytest.approx(1.0)
     eq = (r.dir / "equity.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(eq) == 1 and json.loads(eq[0])["date"] == "2026-10-08"
+    closes = state["closes"]
+    assert closes["date"] == str(close.index[-1].date()) and closes["prev_date"] == str(close.index[-2].date())
+    assert closes["prev"]["SPY"] == pytest.approx(close["SPY"].iloc[-2], abs=1e-3)
 
 
 def test_stale_prices_halt(tmp_path, close):

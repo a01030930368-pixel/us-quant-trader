@@ -43,6 +43,7 @@
     {"symbol": "SPY", "weight": 0.5, "sleeve": "stable"},
     {"symbol": "TQQQ", "weight": 0.25, "sleeve": "aggressive"}
   ],
+  "closes": {"date": "2026-10-07", "prev_date": "2026-10-06", "prev": {"SPY": 518.4}},
   "last_rebalance": "2026-10-01",
   "next_rebalance": {"signal_date": "2026-10-30", "order_date": "2026-11-02"},
   "signal": {
@@ -78,6 +79,8 @@
 | `withdraw` | | 출금 준비 요청이 있을 때만. `withdraw.json` 내용 + `ready`(현금으로 빼 뒀는지), `paused` |
 | `fx` | | 원/달러 환율 `{usdkrw, as_of}`. 실행 때 야후(`KRW=X`)에서 받은 값. 원화 표시와 양도세 추정용이고 매매 판단에는 쓰지 않음. 못 받은 날은 이전 값 유지 |
 | `planned_orders` | | 점검(`--check`) 실행에서만. 리밸런싱 날이면 낼 주문 `[{symbol, side, qty, ref_price, value}]`. 실계좌 리허설(`paper/rehearsal/state.json`)이 이걸로 예정 주문을 보여 줌 |
+
+`closes`(선택): 마지막 가격 날짜와 그 전 거래일 종가. 텔레그램 장 마감 보고가 종목별 하루 등락을 계산할 때 씁니다.
 
 ## trades.jsonl (한 줄 = 주문 하나)
 

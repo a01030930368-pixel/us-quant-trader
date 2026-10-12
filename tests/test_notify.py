@@ -99,6 +99,25 @@ def test_weekly_message():
     assert notify.weekly_message("2026-10-23", st, eq, trades) is None
 
 
+def test_close_message():
+    eq = [{"date": "2026-10-12", "equity": 100000.0, "benchmark_close": 600.0},
+          {"date": "2026-10-13", "equity": 101000.0, "benchmark_close": 606.0}]
+    st = {"initial_capital": 100000, "benchmark": "SPY", "cash": 500.0,
+          "positions": [{"symbol": "QQQ", "qty": 10, "avg_price": 500.0, "last_price": 550.0},
+                        {"symbol": "TQQQ", "qty": 100, "avg_price": 80.0, "last_price": 76.0}],
+          "closes": {"date": "2026-10-13", "prev": {"QQQ": 540.0, "TQQQ": 80.0}}}
+    text = notify.close_message("2026-10-13", st, eq)
+    assert "장 마감 보고" in text and "10/13(화)" in text
+    assert "오늘 +1.00% (+$1,000.00)" in text and "SPY +1.00%" in text
+    assert "QQQ 10주 · $550.00 · +1.85% (+$100.00)" in text
+    assert "TQQQ 100주 · $76.00 · -5.00% (-$400.00)" in text
+    assert text.index("TQQQ") < text.index("QQQ 10주")         # bigger holding first
+    assert "매수가 대비 +10.00%" in text and "현금 $500.00" in text
+    st["closes"]["date"] = "2026-10-12"                          # stale closes: no day change
+    assert "+1.85%" not in notify.close_message("2026-10-13", st, eq)
+    assert notify.close_message("2026-10-14", st, eq) is None
+
+
 def test_weekly_message_first_week_uses_initial_capital():
     eq = [{"date": "2026-10-12", "equity": 99000.0}]
     text = notify.weekly_message("2026-10-16", {"initial_capital": 100000}, eq, [])
