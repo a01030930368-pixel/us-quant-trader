@@ -41,6 +41,22 @@ def test_balance_uses_quotes_when_available():
     assert f"${total:,.2f}" in text
     assert "시세 10/12(월) 23:50" in text and "오늘 +1.00%" in text
     assert text.index("QQQ") < text.index("TQQQ")       # biggest first
+    assert "평균 $750.19 → 현재 $760.00" in text
+    assert "손익 +$637.65 (+1.31%)" in text and "오늘 +1.00% (+$489.11)" in text
+    assert "₩" not in text                              # no exchange rate recorded yet
+
+
+def test_balance_shows_won_profit_with_fx():
+    act, _ = actions()
+    STATE["fx"] = {"usdkrw": 1400.0}
+    try:
+        text = tb.handle("/balance", act)
+    finally:
+        del STATE["fx"]
+    assert "손익 +$68.25 (+0.14%) · 약 +₩95,550" in text            # QQQ: 65 x $1.05
+    assert "평균 $80.96 → 현재 $81.28" in text
+    pnl = 65 * (751.24 - 750.19) + 302 * (81.28 - 80.96)
+    assert f"보유 종목 손익 +${pnl:,.2f}" in text and f"약 +₩{round(pnl * 1400):,}" in text
 
 
 def test_balance_without_quotes_uses_record():
