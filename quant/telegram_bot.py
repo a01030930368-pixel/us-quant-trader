@@ -4,7 +4,7 @@
 .env 의 TELEGRAM_CHAT_ID 대화방(notify_setup.bat 으로 연결한 본인)에서 온 메시지만 따르고,
 나머지는 무시한다. 주문을 내는 명령은 일부러 없다.
 
-    /balance  잔고        보유 종목과 평가금액 (시세가 있으면 최신 시세로)
+    /balance  잔고        보유 종목별 수량·평균 단가·현재가·손익(원화 포함)과 평가금액
     /refresh  새로고침    키움 잔고를 새로 불러온 뒤 잔고 보내기 (주문 없음)
     /status   상태        다음 자동 실행, 마지막 실행 결과, 일시정지 여부
     /next     다음        다음 리밸런싱 날짜와 예상 주문
@@ -74,6 +74,10 @@ def _usd(v: float) -> str:
     return f"${v:,.2f}"
 
 
+def _usd_signed(v: float) -> str:
+    return ("+" if v >= 0 else "-") + _usd(abs(v))
+
+
 def _won(v: float) -> str:
     return f"₩{round(v):,}" if v >= 0 else f"-₩{round(-v):,}"
 
@@ -116,7 +120,9 @@ def balance_text(state: dict, quotes: dict | None = None, paused: bool = False,
     if not state:
         return "💰 아직 잔고 기록이 없어요.\n\nMintory에서 잔고 새로고침을 한 번 눌러 주세요."
     q = (quotes or {}).get("quotes") or {}
+    fx = float((state.get("fx") or {}).get("usdkrw") or 0)
     rows, total = [], float(state.get("cash") or 0)
+    cost_sum = value_sum = 0.0
     for p in state.get("positions") or []:
         sym, qty = p.get("symbol"), float(p.get("qty") or 0)
         live = q.get(sym) or {}
@@ -124,31 +130,45 @@ def balance_text(state: dict, quotes: dict | None = None, paused: bool = False,
         value = qty * price
         total += value
         avg = float(p.get("avg_price") or 0)
-        bits = []
-        if live.get("change") is not None:
-            bits.append(f"{notify.trend(live['change'])} 오늘 {live['change'] * 100:+.2f}%")
+        lines = []
+        mark = "·"
         if avg:
-            bits.append(f"손익 {(price / avg - 1) * 100:+.2f}%")
-        line = f"· {sym} {qty:g}주 · {_usd(value)}"
-        if bits:
-            line += "\n    " + " · ".join(bits)
+            pnl = qty * (price - avg)
+            cost_sum += qty * avg
+            value_sum += value
+            mark = notify.trend(price / avg - 1)
+            lines.append(f"평균 {_usd(avg)} → 현재 {_usd(price)}")
+            won = f" · 약 {_won_signed(pnl * fx)}" if fx else ""
+            lines.append(f"손익 {_usd_signed(pnl)} ({(price / avg - 1) * 100:+.2f}%){won}")
+        elif price:
+            lines.append(f"현재 {_usd(price)}")
+        ch = live.get("change")
+        if ch is not None:
+            day = value - value / (1 + ch) if ch > -1 else 0.0
+            lines.append(f"{notify.trend(ch)} 오늘 {ch * 100:+.2f}% ({_usd_signed(day)})")
+        line = f"{mark} {sym} {qty:g}주 · {_usd(value)}"
+        if lines:
+            line += "\n    " + "\n    ".join(lines)
         rows.append((value, line))
     basis = (f"시세 {_when(quotes.get('as_of'))}" if q
              else f"기록 {_when(state.get('updated_at'))}")
     head = [f"💵 평가금액 {_usd(total)}"]
-    fx = float((state.get("fx") or {}).get("usdkrw") or 0)
     if fx:
         head.append(f"🇰🇷 약 {_won(total * fx)} (환율 {fx:,.1f}원)")
     initial = float(state.get("initial_capital") or 0)
     ret = performance.total_return(equity, initial, total) if equity else (total / initial - 1 if initial else None)
     if ret is not None:
         head.append(f"📊 누적 {ret * 100:+.2f}%")
+    if cost_sum:
+        pnl = value_sum - cost_sum
+        won = f" · 약 {_won_signed(pnl * fx)}" if fx else ""
+        head.append(f"💹 보유 종목 손익 {_usd_signed(pnl)} ({(value_sum / cost_sum - 1) * 100:+.2f}%){won}")
     principal = float(state.get("principal") or initial or 0)
     if principal and abs(principal - initial) >= 0.01:   # money was added or taken out
         head.append(f"🏦 원금 {_usd(principal)} · 번 돈 {'+' if total >= principal else '-'}{_usd(abs(total - principal))}")
-    hold = ["📦 보유 종목"] + [r for _, r in sorted(rows, reverse=True)]
-    hold.append(f"· 현금 · {_usd(float(state.get('cash') or 0))}")
-    blocks = [f"💰 Mintory 잔고\n🕒 {basis} 기준", "\n".join(head), "\n".join(hold)]
+    hold = "📦 보유 종목\n" + "\n\n".join(r for _, r in sorted(rows, reverse=True))
+    hold += f"\n\n💵 현금 · {_usd(float(state.get('cash') or 0))}"
+    blocks = [f"💰 Mintory 잔고\n🕒 {basis} 기준", "\n".join(head), hold]
     if paused:
         blocks.append("⏸ 일시정지 중 (주문 안 함)")
     return "\n\n".join(blocks)
