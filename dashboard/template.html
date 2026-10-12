@@ -535,6 +535,8 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
             </div>
             <button type="button" class="ctl mini" id="month-more" hidden aria-label="월별 결산 보기">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 13.5V8.5M6.3 13.5V5M9.7 13.5V7M13 13.5V3"/></svg>월별 결산</button>
+            <button type="button" class="ctl mini" id="cmp-more" hidden aria-label="카나리아와 4종 혼합, 50/50 비교 보기">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12.5 6 8l3 2.5 4.5-6"/><path d="M2.5 9.5 6 6.5l3 1 4.5-3" opacity=".5"/></svg>전략 비교</button>
             <button type="button" class="ctl mini" id="perf-more" hidden aria-label="수익률 자세히 보기">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.5h4v4M13.5 2.5 8.5 7.5M6.5 13.5h-4v-4M2.5 13.5l5-5"/></svg>자세히</button>
           </div>
@@ -1478,6 +1480,124 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     }
   };
   $("month-more").addEventListener("click", function () { openTable(monthView); });
+
+  // ---- 전략 비교: 지금 모의투자(카나리아) vs 4종 혼합 가상 계좌 vs 둘을 반반 ----
+  // 4종 혼합은 GitHub Actions가 매일 밤 계산하는 별도 가상 계좌(주문 없음)이고, 자동 실행기가 받아 둔다.
+  var SB = DATA.stockblend || null;
+  function blendCompare() {
+    var L = (SB.equity || []).slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+    if (!L.length) return null;
+    var b0 = +L[0].equity;
+    // 4종 누적 수익률을 날짜 d 기준으로 (그날까지 기록된 마지막 값)
+    function blendAt(d) {
+      var v = null;
+      for (var i = 0; i < L.length && L[i].date <= d; i++) v = +L[i].equity;
+      return v == null ? 0 : v / b0 - 1;
+    }
+    var dates = series.length ? series.map(function (p) { return p.date; })
+      : L.slice(1).map(function (r) { return r.date; });
+    // 50/50: 두 계좌에 반씩, 매달 첫 기록일에 다시 반반으로 맞춘다 (백테스트와 같은 방식, 비용 제외)
+    var vc = 0.5, vb = 0.5, pc = 0, pb = 0, month = null, rows = [];
+    dates.forEach(function (d, i) {
+      var c = series.length ? series[i].ret : null, b = blendAt(d);
+      if (c != null) vc *= (1 + c) / (1 + pc);
+      vb *= (1 + b) / (1 + pb);
+      if (c != null) pc = c;
+      pb = b;
+      var tot = (c == null ? 2 * vb : vc + vb);
+      if (month && d.slice(0, 7) !== month) { vc = vb = tot / 2; }
+      month = d.slice(0, 7);
+      rows.push({ date: d, c: c, b: b, m: c == null ? null : tot - 1, s: series.length ? series[i].bench : null });
+    });
+    return rows;
+  }
+  function drawdownOf(vals) {
+    var pk = 1, mdd = 0;
+    vals.forEach(function (v) { if (v == null) return; pk = Math.max(pk, 1 + v); mdd = Math.min(mdd, (1 + v) / pk - 1); });
+    return mdd;
+  }
+  var CMP_LINES = [
+    { k: "c", name: function () { return strat.name || "지금 모의투자"; }, col: "var(--c1)", w: 2.2 },
+    { k: "b", name: function () { return "4종 혼합 (가상 계좌)"; }, col: "var(--c2)", w: 2 },
+    { k: "m", name: function () { return "반반 (50/50)"; }, col: "var(--c3)", w: 2, dash: "6 4" },
+    { k: "s", name: function () { return bench + " 보유"; }, col: "var(--dim)", w: 1.4, dash: "3 4" }
+  ];
+  function cmpChart(rows) {
+    var W = 1100, H = 300, padL = 52, padR = 16, top = 12, bot = 26;
+    var pts = [{ date: null, c: 0, b: 0, m: 0, s: 0 }].concat(rows);
+    var vals = [];
+    pts.forEach(function (p) { CMP_LINES.forEach(function (l) { if (p[l.k] != null) vals.push(p[l.k]); }); });
+    var lo = Math.min(0, Math.min.apply(null, vals)), hi = Math.max(0, Math.max.apply(null, vals));
+    if (hi - lo < 0.01) { hi += 0.005; lo -= 0.005; }
+    var step = niceStep(hi - lo, 5); lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step;
+    var n = pts.length, x = function (i) { return padL + (n < 2 ? 0 : i / (n - 1)) * (W - padL - padR); };
+    var y = function (v) { return top + (hi - v) / (hi - lo) * (H - top - bot); };
+    var svg = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="전략별 누적 수익률 비교">';
+    for (var v = lo; v <= hi + 1e-9; v += step) {
+      var yy = y(v).toFixed(1);
+      svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + yy + '" y2="' + yy + '" stroke="var(--line)"' + (Math.abs(v) < 1e-9 ? "" : ' stroke-dasharray="2 4"') + "/>" +
+        '<text x="' + (padL - 8) + '" y="' + yy + '" dy="0.32em" text-anchor="end">' + (Math.abs(v) < 1e-9 ? "0%" : pct(v, step < 0.01 ? 1 : 0)) + "</text>";
+    }
+    var every = Math.max(1, Math.ceil(n / 8));
+    pts.forEach(function (p, i) {
+      if (!p.date || (i % every && i !== n - 1)) return;
+      var d = parseDate(p.date);
+      svg += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="middle">' + (d.getMonth() + 1) + "/" + d.getDate() + "</text>";
+    });
+    CMP_LINES.slice().reverse().forEach(function (l) {
+      var d = "", on = false;
+      pts.forEach(function (p, i) { var v = p[l.k]; if (v == null) { on = false; return; } d += (on ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1); on = true; });
+      if (d) svg += '<path d="' + d + '" fill="none" stroke="' + l.col + '" stroke-width="' + l.w + '"' + (l.dash ? ' stroke-dasharray="' + l.dash + '"' : "") + ' stroke-linejoin="round"/>';
+    });
+    var cap = CMP_LINES.map(function (l) {
+      return '<span><i style="display:inline-block;width:22px;vertical-align:middle;margin-right:6px;border-top:' + Math.round(l.w) + "px " + (l.dash ? (l.k === "s" ? "dotted " : "dashed ") : "solid ") + l.col + '"></i>' + esc(l.name()) + "</span>";
+    }).join("");
+    return '<div class="m-chart"><div class="cap">' + cap + "</div>" + svg + "</svg></div>";
+  }
+  var cmpView = {
+    title: "전략 비교", btn: "cmp-more", sort: { key: "ret", asc: false }, ascKeys: ["name"],
+    foot: function () {
+      var st = SB.state || {};
+      return "4종 혼합은 키움 계좌와 상관없는 가상 계좌예요(주문 없음). GitHub에서 매일 밤 장 마감 가격으로 계산하고, 이 화면은 2시간마다 새로 받아요" +
+        (st.last_date ? " (마지막 " + ymd(st.last_date) + ")" : "") + ". 반반은 두 계좌에 절반씩 넣고 매달 첫 기록일에 다시 반반으로 맞췄다고 계산한 값이에요(비용 제외). " +
+        "내부자 매수 칸은 SEC가 분기마다 내는 자료를 써서" + (st.insider_latest_filing ? " " + ymd(st.insider_latest_filing) + " 공시까지만" : "") + " 반영돼요.";
+    },
+    draw: function (view, sub, body) {
+      var rows = blendCompare() || [], st = SB.state || {};
+      sub.textContent = rows.length ? ymd(rows[0].date) + "부터 " + rows.length + "일" : "아직 비교할 기록이 없어요";
+      var lastRow = rows[rows.length - 1] || {};
+      var table = CMP_LINES.map(function (l) {
+        var vals = rows.map(function (r) { return r[l.k]; });
+        var lastV = vals.filter(function (v) { return v != null; }).pop();
+        return { name: l.name(), col: l.col, ret: lastV == null ? null : lastV, mdd: drawdownOf(vals),
+                 days: vals.filter(function (v) { return v != null; }).length };
+      });
+      var sleeves = (st.sleeves || []).map(function (sl) {
+        var g = 1;
+        (SB.equity || []).forEach(function (r) { var v = r.sleeves && r.sleeves[sl.label]; if (v != null) g *= 1 + v; });
+        var h = sl.holdings || [];
+        return { name: sl.label, ret: g - 1, n: h.length,
+                 list: h.slice().sort(function (a, b) { return (b.return || 0) - (a.return || 0); }).map(function (x) { return x.ticker; }).join(", ") };
+      });
+      body.innerHTML = (rows.length ? cmpChart(rows) : '<div class="empty">아직 비교할 기록이 없어요. 4종 혼합 장부는 미국장 마감 뒤 매일 밤 하루씩 쌓여요.</div>') +
+        tableHtml([["name", "전략", "l"], ["ret", "누적 수익률"], ["mdd", "최대 낙폭"], ["days", "기록 일수"]], view.sort,
+          sortRows(table, view.sort).map(function (r) {
+            return '<tr><td class="l"><i style="display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:8px;background:' + r.col + '"></i><b>' + esc(r.name) + "</b></td>" +
+              '<td class="' + tone(r.ret) + '"><b>' + pct(r.ret) + "</b></td>" +
+              '<td class="' + (r.mdd < 0 ? "down" : "sub") + '">' + pct(r.mdd, 1) + "</td><td class=\"sub\">" + r.days + "일</td></tr>";
+          }).join("")) +
+        (sleeves.length ? '<h4 style="margin:18px 6px 8px;font-size:14px">4종 혼합 칸별 (각 25%)</h4>' +
+          '<table class="detail"><thead><tr><th class="l">칸</th><th>시작 후 수익률</th><th>보유</th><th class="l">보유 종목 (수익률 높은 순)</th></tr></thead><tbody>' +
+          sleeves.map(function (r) {
+            return '<tr><td class="l"><b>' + esc(r.name) + '</b></td><td class="' + tone(r.ret) + '">' + pct(r.ret) + "</td><td>" + r.n + '종목</td><td class="l sub" style="white-space:normal">' + esc(r.list || "—") + "</td></tr>";
+          }).join("") + "</tbody></table>" : "") +
+        (st.equity != null ? '<p style="margin:12px 6px 0">4종 가상 계좌: ' + usd(st.equity) + " (시작 " + usd(st.base_equity, 0) + ", " + ymd(st.base_date) + " 종가)</p>" : "");
+    }
+  };
+  if (SB) {
+    $("cmp-more").hidden = false;
+    $("cmp-more").addEventListener("click", function () { openTable(cmpView); });
+  }
 
   // trades: every order with all its fields
   var tradeView = {

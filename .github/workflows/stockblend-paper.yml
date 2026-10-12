@@ -1,0 +1,53 @@
+# 4종 혼합(S&P 1500 개별주) 모의 장부를 매일 밤 갱신합니다. 주문은 내지 않는 가상 계좌입니다.
+# 장부는 paper-stockblend 브랜치의 paper_stockblend/ 폴더에 쌓이고, Mintory가 받아 카나리아와 비교합니다.
+name: stockblend-paper
+on:
+  schedule:
+    - cron: "30 22 * * 1-5"   # 미국장 마감 뒤 (한국시간 다음 날 07:30)
+  workflow_dispatch:
+  push:
+    branches: [claude/project-thread-jzo1hc]
+    paths:
+      - "scripts/stockblend_paper.py"
+      - "quant/stockblend/**"
+      - ".github/workflows/stockblend-paper.yml"
+concurrency:
+  group: stockblend-paper
+  cancel-in-progress: false
+jobs:
+  ledger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt lxml
+      - name: 지난 분기 내부자 거래 파일 재사용
+        uses: actions/cache@v4
+        with:
+          path: data_cache/sec/insider
+          key: sec-insider-${{ github.run_id }}
+          restore-keys: sec-insider-
+      - name: 장부 브랜치 열기
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          if git fetch --depth 1 origin paper-stockblend:paper-stockblend; then
+            git worktree add ledger_repo paper-stockblend
+          else
+            git worktree add --detach ledger_repo
+            cd ledger_repo && git checkout --orphan paper-stockblend && git rm -rfq . && git clean -fdq
+          fi
+      - name: 4종 혼합 계산하고 장부에 이어 쓰기
+        run: python scripts/stockblend_paper.py --ledger ledger_repo/paper_stockblend
+      - name: 장부 저장
+        working-directory: ledger_repo
+        run: |
+          git add paper_stockblend
+          git diff --cached --quiet && exit 0
+          git commit -qm "4종 혼합 모의 장부 $(date -u +%Y-%m-%d)"
+          git push origin paper-stockblend
