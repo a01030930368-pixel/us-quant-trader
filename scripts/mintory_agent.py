@@ -235,6 +235,32 @@ def send_preview(day: str) -> None:
         update_state(preview_sent=order)
 
 
+STOCKBLEND_EVERY = timedelta(hours=2)
+
+
+def stockblend_due(now: datetime, last: str | None) -> bool:
+    """Fetch the four-sleeve paper ledger at start and then every couple of hours."""
+    if not last:
+        return True
+    try:
+        return now - datetime.fromisoformat(last) >= STOCKBLEND_EVERY
+    except ValueError:
+        return True
+
+
+def sync_stockblend() -> None:
+    """Download the four-sleeve blend's paper ledger into paper/stockblend (comparison only)."""
+    from quant import notify, stockblend_sync
+
+    env = notify.read_env()
+    err = stockblend_sync.sync(PAPER / "stockblend", env.get("GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN"),
+                               env.get("MINTORY_REPO", stockblend_sync.REPO))
+    state = read_state()
+    if err and err != state.get("stockblend_error"):
+        log(err)
+    update_state(stockblend_at=now_iso(), stockblend_error=err)
+
+
 def now_iso() -> str:
     return datetime.now(KST).isoformat(timespec="seconds")
 
@@ -648,6 +674,13 @@ def loop(restarted: bool = False) -> None:
         week = weekly_due(now, state.get("weekly_sent"))
         if week:
             send_weekly(week)
+            state = read_state()
+        if stockblend_due(now, state.get("stockblend_at")):
+            try:
+                sync_stockblend()
+            except Exception as e:  # noqa: BLE001 - a comparison download must never stop trading
+                log(f"4종 혼합 장부 받기 실패: {e}")
+                update_state(stockblend_at=now_iso())
             state = read_state()
         day = backup_due(now, state.get("backup_day"))
         if day and not _job["name"]:

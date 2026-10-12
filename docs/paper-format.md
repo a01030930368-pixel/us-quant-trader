@@ -130,6 +130,13 @@
 - `close_day`: 아침 장 마감 기록(화~토 7시 잔고 새로고침)을 한 날. 밤 23:45 실행은 장중 가격이라 이 기록이 그날 줄을 종가로 다시 씁니다.
 - 대시보드는 실제 기록(`paper/`)을 볼 때 5분마다 화면을 새로 읽습니다.
 
+## stockblend/ (선택, 4종 혼합 가상 계좌)
+
+자동 실행기가 GitHub `paper-stockblend` 브랜치의 `paper_stockblend/` 를 2시간마다 받아 `paper/stockblend/` 에 둡니다(`quant/stockblend_sync.py`). 만드는 쪽은 `scripts/stockblend_paper.py` (GitHub Actions `stockblend-paper`). 키움 계좌와 상관없는 가상 계좌이고, 대시보드의 "전략 비교"에만 쓰입니다.
+- `equity.jsonl`: 한 줄 = 거래일 하나 `{"date", "equity", "ret", "sleeves": {칸 이름: 그날 수익률}}`. 첫 줄은 시작일(2026-10-09, $100,000). 이미 쓴 줄은 고치지 않고 새 날만 이어 붙입니다.
+- `state.json`: `name`, `updated_at`, `base_date`, `base_equity`, `last_date`, `equity`, `return`, `max_drawdown`, `universe_size`, `cost_bps`, `insider_latest_filing`(반영된 마지막 내부자 매수 공시일), `note`, `sleeves`(칸마다 `label`, `weight`, `holdings`: `ticker`, `entry_date`, `entry_price`, `last_price`, `return`).
+- `universe.txt`: 처음 실행한 날의 S&P 1500 종목 목록(고정).
+
 ## STOP (선택)
 
 `paper/STOP` 파일이 있으면 실행기는 주문을 내지 않습니다. 잔고와 그날 평가금액 기록은 계속 남깁니다. Mintory 화면의 일시정지 버튼이 이 파일을 만들고, 다시 시작 버튼이 지웁니다.
