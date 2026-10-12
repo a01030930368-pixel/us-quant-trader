@@ -149,10 +149,11 @@ def main():
 
     # 8. Same periods and costs as the S&P 1500 four-sleeve stock blend
     # (other project): 2010-2017 / 2018~, 25bp one-way.
-    rows = []
+    rows, daily = [], {}
     for name, p in (("EEM 카나리아 (지금 모의투자)", EEM), ("지금 전략 이전 버전", CASES["지금 전략 (4분할)"])):
         s, r = both(p, cost=25.0)
         chain = pd.concat([s.loc[:"2017"], r.loc["2018":]])
+        daily[name] = chain.loc["2010":]
         spy_m = (1 + pd.concat([spy_s.loc[:"2017"], spy_r.loc["2018":]])).resample("ME").prod() - 1
         mine_m = (1 + chain).resample("ME").prod() - 1
         for label, sl in (("2010~2017", slice("2010", "2017")), ("2018~", slice("2018", None)),
@@ -168,6 +169,12 @@ def main():
             fmt(pd.DataFrame(rows)), ""]
 
     Path("reports").mkdir(exist_ok=True)
+    # Daily returns at 25bp, to mix with the other project's four-sleeve blend.
+    daily = pd.DataFrame(daily)
+    daily.to_csv("reports/canary_daily_25bp.csv", float_format="%.6f")
+    print("MONTHLY_RETURNS_CSV_BEGIN")
+    print(((1 + daily).resample("ME").prod() - 1).to_csv(float_format="%.6f"))
+    print("MONTHLY_RETURNS_CSV_END")
     text = "\n".join(out).replace("| nan ", "| -   ")
     Path("reports/canary.md").write_text(text, encoding="utf-8")
     print(text)
