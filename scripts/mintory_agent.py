@@ -18,8 +18,10 @@ Mintory 화면의 버튼(잔고 새로고침, 지금 매매 실행, 일시정지
 - 일시정지는 paper/STOP 파일을 만들고 지우는 것과 같다(실행기가 STOP이 있으면 주문을 안 냄).
 - 화~토 아침 7시에 잔고를 한 번 새로 읽어 전날 기록을 장 마감 가격으로 맞춘다(주문 없음).
   밤 23:45 실행은 장중 가격이라서. 7시에 PC가 꺼져 있었으면 그날 켜질 때 한다.
-- 토요일 아침 7시(금요일 미국장 마감 뒤)에 잔고를 새로 불러와 주간 리포트를 텔레그램으로 보낸다.
-  그때 PC가 꺼져 있었으면 주말 중 켜질 때 보낸다. .env 에 NOTIFY_WEEKLY=0 이면 끈다.
+- 거래일 다음 날 아침 7시에 장 마감 보고(평가금액, 보유 종목별 그날 등락)를 텔레그램으로 보낸다.
+  .env 에 NOTIFY_CLOSE=0 이면 끈다. 휴장일 다음 날은 보내지 않는다.
+- 그 주 마지막 거래일(보통 금요일, 금요일이 휴장이면 목요일) 다음 날 아침 7시에는 주간 리포트도
+  보낸다. 그때 PC가 꺼져 있었으면 그 주 안에 켜질 때 보낸다. .env 에 NOTIFY_WEEKLY=0 이면 끈다.
 - 텔레그램이 연결돼 있으면 휴대폰 명령(/balance, /refresh, /status, /pause, /resume)에 답한다
   (quant/telegram_bot.py). 주문을 내는 명령은 없다.
 - 상태는 paper/agent.json, 로그는 paper/logs/agent.log.
@@ -158,17 +160,30 @@ def missed_message(days: list[str], next_iso: str | None) -> str:
             "💡 그 시각에 PC를 켜 두세요.")
 
 
-WEEKLY_AT = 7  # KST hour on Saturday; Friday's US session has closed by then
+WEEKLY_AT = 7  # KST hour; the week's last US session has closed by then
+
+
+def last_session_of_week(d: date) -> date | None:
+    """The last NYSE trading day in the Monday-Sunday week containing `d`."""
+    from quant.market_calendar import is_trading_day
+    monday = d - timedelta(days=d.weekday())
+    for k in range(4, -1, -1):
+        if is_trading_day(monday + timedelta(days=k)):
+            return monday + timedelta(days=k)
+    return None
 
 
 def weekly_due(now: datetime, last_week: str | None) -> str | None:
-    """The Friday whose weekly report is due (Saturday 07:00 KST through Sunday), else None."""
+    """The week's last session (usually Friday, Thursday when Friday is a holiday) whose
+    weekly report is due: from 07:00 KST the morning after that session, until sent."""
     now = now.astimezone(KST)
-    wd = now.weekday()
-    if not ((wd == 5 and now.hour >= WEEKLY_AT) or wd == 6):
+    closed = now.date() - timedelta(days=1 if now.hour >= WEEKLY_AT else 2)  # latest closed US date
+    end = last_session_of_week(closed)
+    if end is None or end > closed:
         return None
-    friday = (now - timedelta(days=wd - 4)).date().isoformat()
-    return friday if friday != last_week else None
+    if now.date() > end + timedelta(days=6 - end.weekday()):  # catch up only until that Sunday
+        return None
+    return end.isoformat() if end.isoformat() != last_week else None
 
 
 CLOSE_AT = 7  # KST hour; the US session that the 23:45 run saw mid-day has closed by then
@@ -187,11 +202,17 @@ def close_refresh_due(now: datetime, last: str | None) -> str | None:
 
 
 def record_close(day: str) -> None:
-    """Balance check after the US close, so the day's record uses closing prices."""
+    """Balance check after the US close, so the day's record uses closing prices,
+    then the phone's close report for that session (`day` is the KST morning after)."""
     with _job_lock:
         result = _run_job("refresh")
     log(f"장 마감 잔고 기록: {result}")
     update_state(close_day=day)
+    if result == "ok":
+        from quant import notify
+        session = (date.fromisoformat(day) - timedelta(days=1)).isoformat()
+        if notify.notify_close(session, PAPER):
+            log(f"장 마감 보고 보냄 ({session})")
 
 
 BACKUP_AT = 7  # KST hour; the night's run and fills are final by then

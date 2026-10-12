@@ -3,6 +3,7 @@
 .env 에 TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID 가 있으면 보낸다. 없으면 아무것도 안 한다.
 설정은 notify_setup.bat (scripts/notify_setup.py) 이 도와준다.
 매일 밤 요약을 끄려면 .env 에 NOTIFY_DAILY=0 을 넣는다.
+장 마감 보고(아침 7시, 거래일 다음 날)를 끄려면 NOTIFY_CLOSE=0, 주간 보고는 NOTIFY_WEEKLY=0.
 
 알림 실패가 매매를 막으면 안 되므로 send()는 절대 예외를 던지지 않는다.
 """
@@ -43,6 +44,7 @@ def settings(path: Path = ENV) -> dict:
     return {"token": env.get("TELEGRAM_BOT_TOKEN", ""), "chat_id": env.get("TELEGRAM_CHAT_ID", ""),
             "daily": env.get("NOTIFY_DAILY", "1") != "0",
             "weekly": env.get("NOTIFY_WEEKLY", "1") != "0",
+            "close": env.get("NOTIFY_CLOSE", "1") != "0",
             "preview": env.get("NOTIFY_PREVIEW", "1") != "0"}
 
 
@@ -143,7 +145,7 @@ def _pp(v: float) -> str:
 
 
 def weekly_message(week_end: str, state: dict, equity: list[dict], trades: list[dict]) -> str | None:
-    """Saturday-morning summary of the US trading week that ended on `week_end` (a Friday)."""
+    """Summary of the US trading week whose last session was `week_end` (usually a Friday)."""
     end = date.fromisoformat(week_end)
     start = end - timedelta(days=end.weekday())          # Monday
     week = [r for r in equity if start.isoformat() <= r["date"] <= week_end]
@@ -205,6 +207,65 @@ def weekly_message(week_end: str, state: dict, equity: list[dict], trades: list[
     if nxt:
         blocks.append("🗓 다음 주\n" + "\n".join(nxt))
     return "\n\n".join(blocks)
+
+
+def close_message(day: str, state: dict, equity: list[dict]) -> str | None:
+    """Morning report for the US session `day`: the account and each holding at the close."""
+    row = next((r for r in reversed(equity) if r.get("date") == day), None)
+    if row is None:
+        return None
+    initial = float(state.get("initial_capital") or 0)
+    rows = [r for r in equity if r["date"] <= day]
+    g = performance.growth(rows, initial)
+    cur = float(row["equity"])
+    blocks = [f"🔔 Mintory 장 마감 보고\n{_md(day)} 미국장"]
+    head = [f"💵 평가금액 {_usd(cur)}"]
+    if len(rows) >= 2 and g[-2]:
+        r = g[-1] / g[-2] - 1
+        pnl = cur - float(rows[-2]["equity"]) - performance.flow(row)
+        head.append(f"{trend(r)} 오늘 {_pct(r)} ({'+' if pnl >= 0 else '-'}{_usd(abs(pnl))})")
+        b0, b1 = rows[-2].get("benchmark_close"), row.get("benchmark_close")
+        if b0 and b1:
+            spy = float(b1) / float(b0) - 1
+            head.append(f"🆚 {state.get('benchmark') or 'SPY'} {_pct(spy)} · 차이 {_pp(r - spy)}")
+    if initial:
+        head.append(f"📊 누적 {_pct(g[-1] - 1)}")
+    blocks.append("\n".join(head))
+
+    closes = state.get("closes") or {}
+    prev = closes.get("prev") or {} if closes.get("date") == day else {}
+    lines = []
+    for p in sorted(state.get("positions") or [], key=lambda p: -(p.get("qty") or 0) * (p.get("last_price") or 0)):
+        sym, qty, px = p.get("symbol"), p.get("qty") or 0, p.get("last_price")
+        if not px:
+            continue
+        line = f"{sym} {qty}주 · {_usd(float(px))}"
+        p0 = prev.get(sym)
+        if p0:
+            ch = float(px) / float(p0) - 1
+            line = f"{trend(ch)} {line} · {_pct(ch)} ({'+' if ch >= 0 else '-'}{_usd(abs(qty * (float(px) - float(p0))))})"
+        else:
+            line = f"· {line}"
+        avg = p.get("avg_price")
+        if avg:
+            line += f"\n    매수가 대비 {_pct(float(px) / float(avg) - 1)}"
+        lines.append(line)
+    if lines:
+        cash = state.get("cash")
+        blocks.append("📋 보유 종목\n" + "\n".join(lines) + (f"\n💵 현금 {_usd(float(cash))}" if cash is not None else ""))
+    return "\n\n".join(blocks)
+
+
+def notify_close(day: str, paper: Path, path: Path = ENV) -> bool:
+    """Send the morning close report for the US session `day`. Never raises."""
+    try:
+        if not configured(path) or not settings(path)["close"]:
+            return False
+        state = json.loads((paper / "state.json").read_text(encoding="utf-8-sig"))
+        text = close_message(day, state, read_jsonl(paper / "equity.jsonl"))
+        return send(text, path) if text else False
+    except Exception:  # noqa: BLE001 - a notification must never break the agent
+        return False
 
 
 def preview_message(preview: dict, paused: bool = False) -> str | None:

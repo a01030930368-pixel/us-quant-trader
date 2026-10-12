@@ -614,6 +614,7 @@ class Runner:
         now = (now or datetime.now(timezone.utc)).astimezone(KST)
         today = pd.Timestamp(now.date())
         self.planned = None  # a --check run records the orders it would send
+        self.closes = None
         meta = self._read("meta.json")
         alerts: list[dict] = []
 
@@ -632,6 +633,11 @@ class Runner:
         self.fx = fx_source() if fx_source else None
         last = close.index[-1]
         prices = {t: float(close[t].iloc[-1]) for t in close.columns}
+        # The last bar's date and the bar before it, for the daily close report.
+        prev = close.iloc[-2] if len(close) > 1 else None
+        self.closes = {"date": str(last.date()),
+                       "prev_date": str(close.index[-2].date()) if prev is not None else None,
+                       "prev": {t: round(float(prev[t]), 4) for t in close.columns} if prev is not None else {}}
         age = (today - last.normalize()).days
         if age > self.cfg.max_data_age_days:
             alerts.append({"level": "error",
@@ -839,6 +845,8 @@ class Runner:
                        "scores": scores or []},
             "alerts": alerts,
         }
+        if getattr(self, "closes", None):
+            state["closes"] = self.closes
         if self.cfg.canary and canary is not None:
             state["signal"]["canary"] = canary
         if parts:
