@@ -147,6 +147,26 @@ def main():
     yearly.index.name = "연도"
     out += ["## 7. 연도별\n", fmt(yearly.reset_index()), ""]
 
+    # 8. Same periods and costs as the S&P 1500 four-sleeve stock blend
+    # (other project): 2010-2017 / 2018~, 25bp one-way.
+    rows = []
+    for name, p in (("EEM 카나리아 (지금 모의투자)", EEM), ("지금 전략 이전 버전", CASES["지금 전략 (4분할)"])):
+        s, r = both(p, cost=25.0)
+        chain = pd.concat([s.loc[:"2017"], r.loc["2018":]])
+        spy_m = (1 + pd.concat([spy_s.loc[:"2017"], spy_r.loc["2018":]])).resample("ME").prod() - 1
+        mine_m = (1 + chain).resample("ME").prod() - 1
+        for label, sl in (("2010~2017", slice("2010", "2017")), ("2018~", slice("2018", None)),
+                          ("2010~ 전체", slice("2010", None))):
+            st = stats(chain.loc[sl])
+            rows.append({"전략": name, "구간": label, "연수익": st["연수익"], "최대낙폭": st["최대낙폭"],
+                         "Sharpe": st["Sharpe"], "최악의 달": st["최악의 달"],
+                         "수익 난 달": st["수익 난 달"],
+                         "SPY와 월 상관": f"{mine_m.loc[sl].corr(spy_m.loc[sl]):.2f}"})
+    out += ["## 8. 다른 프로젝트의 4종 혼합과 같은 조건 (편도 25bp)\n",
+            "4종 혼합(S&P 1500 개별주): 2010~2017 연 13.7% / -21.5% / 샤프 0.85, "
+            "2018~ 연 20.4% / -34.7% / 샤프 0.96, S&P500과 월 상관 0.76.\n",
+            fmt(pd.DataFrame(rows)), ""]
+
     Path("reports").mkdir(exist_ok=True)
     text = "\n".join(out).replace("| nan ", "| -   ")
     Path("reports/canary.md").write_text(text, encoding="utf-8")
