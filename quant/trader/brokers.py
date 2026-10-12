@@ -213,8 +213,8 @@ class KiwoomBroker:
         except (RuntimeError, requests.RequestException, ValueError) as e:
             msg = str(e)[:300]
             if "응답 없음" in msg:
-                # No reply: the order may still have been accepted. Not retried;
-                # the next run re-plans from the actual balance.
+                # No reply: the order may still have been accepted. Not retried
+                # here; the runner checks the balance and resends it if missing.
                 return {"ok": False, "status": "pending",
                         "msg": "키움 응답 없음 - 접수 여부 불확실, 다음 실행 때 잔고로 확인"}
             return {"ok": False, "msg": msg}
