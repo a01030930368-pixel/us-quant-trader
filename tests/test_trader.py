@@ -756,3 +756,80 @@ def test_no_flow_while_orders_are_unfilled(tmp_path, close):
     # shares bought since then explain the cash that left: no flow
     assert r._detect_flow(meta, {"SPY": {"qty": 2, "avg_price": 400.0}}, 200.0, {"SPY": 400.0}) == 0.0
     assert r._detect_flow(meta, {}, 1050.0, {}) == 0.0                  # a small dividend
+
+
+class SilentOnce(SimBroker):
+    """The first order of each symbol in `drop` gets no reply; `lost` decides
+    whether it was really dropped (True) or quietly executed (False)."""
+
+    def __init__(self, *a, drop=(), lost=True, silent=1, **kw):
+        super().__init__(*a, **kw)
+        self.drop, self.lost, self.silent, self.sent = dict.fromkeys(drop, silent), lost, silent, []
+
+    def place_order(self, ticker, side, qty, ref_price):
+        self.sent.append(ticker)
+        if self.drop.get(ticker):
+            self.drop[ticker] -= 1
+            if not self.lost:
+                super().place_order(ticker, side, qty, ref_price)
+            return {"ok": False, "status": "pending", "msg": "키움 응답 없음 - 접수 여부 불확실"}
+        return super().place_order(ticker, side, qty, ref_price)
+
+
+OPEN = datetime(2026, 10, 7, 15, 0, tzinfo=timezone.utc)      # Wed 11:00 ET
+CLOSED = datetime(2026, 10, 8, 0, 0, tzinfo=timezone.utc)     # Wed 20:00 ET
+
+
+def silent_runner(tmp_path, **kw):
+    cfg = TraderConfig(state_dir=tmp_path / "paper")
+    r = Runner(SilentOnce(cfg.state_dir / "sim_account.json", **kw), cfg)
+    r.waits = []
+    r.sleep = r.waits.append
+    return r
+
+
+def first_buy(tmp_path, close):
+    probe = make_runner(tmp_path / "probe")
+    probe.run(close=close, now=OPEN)
+    return next(t["symbol"] for t in trades(probe) if t["side"] == "buy")
+
+
+def test_unanswered_order_is_sent_again_while_market_open(tmp_path, close):
+    sym = first_buy(tmp_path, close)
+    r = silent_runner(tmp_path, drop=[sym])
+    r.run(close=close, now=OPEN)
+    assert r.broker.sent.count(sym) == 2 and r.waits == [60.0]
+    rec = next(t for t in trades(r) if t["symbol"] == sym)
+    assert rec["status"] == "filled" and rec["retried"] == 1
+    assert json.loads((r.dir / "meta.json").read_text()).get("last_signal")  # the rebalance counts as done
+    assert not [a for a in r.run(close=close, now=OPEN)["alerts"] if "확인하지 못했" in a["message"]]
+
+
+def test_unanswered_order_that_went_through_is_not_doubled(tmp_path, close):
+    sym = first_buy(tmp_path, close)
+    r = silent_runner(tmp_path, drop=[sym], lost=False)
+    r.run(close=close, now=OPEN)
+    assert r.broker.sent.count(sym) == 1
+    rec = next(t for t in trades(r) if t["symbol"] == sym)
+    assert rec["status"] == "filled" and not rec.get("retried")
+
+
+def test_unanswered_order_waits_when_market_closed_or_retries_run_out(tmp_path, close):
+    sym = first_buy(tmp_path, close)
+    r = silent_runner(tmp_path / "closed", drop=[sym])
+    state = r.run(close=close, now=CLOSED)
+    assert r.broker.sent.count(sym) == 1 and r.waits == []
+    assert next(t for t in trades(r) if t["symbol"] == sym)["status"] == "pending"
+    assert any("확인하지 못했" in a["message"] for a in state["alerts"])
+
+    r = silent_runner(tmp_path / "busy", drop=[sym], silent=5)
+    r.run(close=close, now=OPEN)
+    assert r.broker.sent.count(sym) == 3 and len(r.waits) == 2
+    rec = next(t for t in trades(r) if t["symbol"] == sym)
+    assert rec["status"] == "pending" and rec["retried"] == 2
+
+
+def test_market_open_window():
+    assert Runner._market_open(OPEN) and not Runner._market_open(CLOSED)
+    assert not Runner._market_open(datetime(2026, 10, 10, 15, 0, tzinfo=timezone.utc))  # Saturday
+    assert not Runner._market_open(datetime(2026, 10, 7, 19, 58, tzinfo=timezone.utc))  # 2 min to close

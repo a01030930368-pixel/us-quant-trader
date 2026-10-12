@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -83,6 +84,12 @@ class TraderConfig:
     # the account, buying toward the current targets without selling anything.
     idle_cash_pct: float = 0.02
     max_data_age_days: int = 5         # refuse to trade on stale prices
+    # An order Kiwoom never answered is checked against the balance after
+    # retry_wait_s seconds and sent again if it isn't there, up to this many
+    # times, only while the US regular session is open (2026-10-12: a TQQQ buy
+    # got no reply and would otherwise have waited a whole day).
+    order_retries: int = 2
+    retry_wait_s: float = 60.0
     state_dir: Path = Path("paper")
     # Canary + tranches (strategy thread, 2026-10-10). Empty canary and one
     # tranche = the plain monthly blend above. With canary=("EEM",) each
@@ -351,6 +358,7 @@ class Runner:
         # (tests pass prices in and may set this to a lambda).
         self.fx_source = None
         self.fx: float | None = None
+        self.sleep = time.sleep  # tests replace it
 
     # -- files ----------------------------------------------------------------
     def _read(self, name: str) -> dict:
@@ -598,6 +606,52 @@ class Runner:
                     f"-{self.cfg.max_daily_loss * 100:.0f}%). 내일 다시 확인합니다.")
         return None
 
+    @staticmethod
+    def _no_reply(res: dict) -> bool:
+        return not res.get("ok") and res.get("status") == "pending"
+
+    @staticmethod
+    def _market_open(now: datetime, margin_min: int = 5) -> bool:
+        """The US regular session is open at `now` with `margin_min` minutes to spare."""
+        try:
+            from zoneinfo import ZoneInfo
+            et = now.astimezone(ZoneInfo("America/New_York"))
+        except Exception:  # noqa: BLE001 - no tz data: don't guess, don't retry
+            return False
+        d = et.date()
+        if not mc.is_trading_day(d):
+            return False
+        close_h = 13 if d in mc.early_closes(d.year) else 16
+        minutes = et.hour * 60 + et.minute
+        return 9 * 60 + 30 <= minutes <= close_h * 60 - margin_min
+
+    def _retry_unanswered(self, unanswered: list, positions: dict, now: datetime) -> list:
+        """Orders Kiwoom never answered: wait, look at the balance and send the
+        ones that left no trace again. Returns (order, result) for each, the
+        result being "pending" once the shares show up (or the order was taken)."""
+        out = []
+        for attempt in range(1, self.cfg.order_retries + 1):
+            if not unanswered or not self._market_open(now):
+                break
+            self.sleep(self.cfg.retry_wait_s)
+            try:
+                held = self.broker.positions()
+            except Exception:  # noqa: BLE001 - can't tell, leave them pending
+                break
+            still = []
+            for o, res in unanswered:
+                before = positions.get(o["symbol"], {}).get("qty", 0)
+                qty = held.get(o["symbol"], {}).get("qty", 0)
+                if (qty > before) if o["side"] == "buy" else (qty < before):
+                    out.append((o, {"ok": True, "status": "pending", "fill_price": o["ref_price"],
+                                    "retried": attempt - 1}))
+                    continue
+                res = self.broker.place_order(o["symbol"], o["side"], o["qty"], o["ref_price"])
+                res["retried"] = attempt
+                (still if self._no_reply(res) else out).append((o, res))
+            unanswered = still
+        return out + unanswered
+
     def _announce(self, orders: list[dict]) -> None:
         if self.mode not in self.LIVE_MODES or not self.notify:
             return
@@ -724,10 +778,9 @@ class Runner:
                 meta["fee_batch"] = {"time": now.isoformat(timespec="seconds"), "cash_before": cash}
                 self._announce(orders)
                 all_ok = True
-                for o in orders:
-                    res = self.broker.place_order(o["symbol"], o["side"], o["qty"], o["ref_price"])
+
+                def record(o: dict, res: dict) -> bool:
                     ok = res.get("ok", False)
-                    all_ok &= ok
                     rec = {"time": now.isoformat(timespec="seconds"), "date": str(last.date()),
                            "symbol": o["symbol"], "side": o["side"], "qty": o["qty"],
                            "price": round(res.get("fill_price", o["ref_price"]), 4),
@@ -738,6 +791,8 @@ class Runner:
                            "note": note,
                            **({"fx": self.fx} if self.fx else {}),
                            "held_before": positions.get(o["symbol"], {}).get("qty", 0)}
+                    if res.get("retried"):
+                        rec["retried"] = res["retried"]
                     if not ok:
                         rec["message"] = res.get("msg", "")
                         alerts.append({"level": "warn", "message":
@@ -746,6 +801,17 @@ class Runner:
                                           if rec["status"] == "pending" else "주문이 거부되었습니다")
                                        + f" ({res.get('msg', '')})"})
                     self._append("trades.jsonl", rec)
+                    return ok
+
+                unanswered = []  # (order, last result): Kiwoom never replied
+                for o in orders:
+                    res = self.broker.place_order(o["symbol"], o["side"], o["qty"], o["ref_price"])
+                    if self._no_reply(res):
+                        unanswered.append((o, res))
+                    else:
+                        all_ok &= record(o, res)
+                for o, res in self._retry_unanswered(unanswered, positions, now):
+                    all_ok &= record(o, res)
                 if all_ok and rebalance:
                     meta["last_signal"] = str(sig.date())
                     meta["last_rebalance"] = str(today.date())
