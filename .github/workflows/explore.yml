@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: ["claude/project-thread-jzo1hc"]
-    paths: ["quant/new_strategies.py", "scripts/explore_new.py", ".github/workflows/explore.yml"]
+    paths: ["quant/new_strategies.py", "scripts/explore_new.py", "scripts/validate_lowvol_mix.py", ".github/workflows/explore.yml"]
 jobs:
   explore:
     runs-on: ubuntu-latest
@@ -17,11 +17,12 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - run: python scripts/explore_new.py
+      - run: python scripts/validate_lowvol_mix.py
       - run: cat reports/explore.md >> "$GITHUB_STEP_SUMMARY"
       - name: Save the report to this branch
         if: github.ref != 'refs/heads/main'
         run: |
-          mkdir -p results && cp reports/explore.md reports/explore_returns.csv results/
+          mkdir -p results && cp reports/explore.md reports/explore_returns.csv reports/lowvol_mix.md results/
           git config user.name "github-actions[bot]"
           git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
           git add results && git commit -m "Explore report from run ${{ github.run_id }}" && git push
