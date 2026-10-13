@@ -1,0 +1,25 @@
+# Actions 탭 -> audit -> Run workflow: 모의투자 전략(EEM 카나리아) 독립 검증 리포트를 만듭니다.
+name: audit
+on:
+  # 수동 실행만 (Actions 사용 시간 절약). Actions 탭 -> 이 워크플로 -> Run workflow
+  workflow_dispatch:
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python scripts/audit_canary.py
+      - run: cat reports/audit.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Save the report to this branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          mkdir -p results && cp reports/audit.md results/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add results && git commit -m "Audit report from run ${{ github.run_id }}" && git push

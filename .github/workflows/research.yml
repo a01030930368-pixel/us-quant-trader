@@ -1,12 +1,7 @@
 # Actions 탭 -> research -> Run workflow: 새 연구 방향 실험 리포트를 만듭니다.
 name: research
 on:
-  # Also runs automatically when the experiment or strategy code changes.
-  push:
-    paths:
-      - "scripts/research_strategy.py"
-      - "quant/strategies.py"
-      - ".github/workflows/research.yml"
+  # 수동 실행만 (Actions 사용 시간 절약). Actions 탭 -> 이 워크플로 -> Run workflow
   workflow_dispatch:
 jobs:
   research:

@@ -1,12 +1,7 @@
 # Actions 탭 -> canary -> Run workflow: 카나리아 EEM 검증 리포트를 만듭니다.
 name: canary
 on:
-  # Also runs automatically when the experiment or strategy code changes.
-  push:
-    paths:
-      - "scripts/validate_canary.py"
-      - "quant/strategies.py"
-      - ".github/workflows/canary.yml"
+  # 수동 실행만 (Actions 사용 시간 절약). Actions 탭 -> 이 워크플로 -> Run workflow
   workflow_dispatch:
 jobs:
   canary:

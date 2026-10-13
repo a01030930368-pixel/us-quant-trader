@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -28,6 +29,7 @@ from quant.data import load_prices
 from quant.strategies import REGISTRY, _period_ends, momentum_13612, momentum_blend, momentum_rotation, tranched
 
 KST = timezone(timedelta(hours=9))
+ET = ZoneInfo("America/New_York")
 SAFE = "IEF"
 
 
@@ -130,6 +132,18 @@ class TraderConfig:
         """Score used for ranking: mean trailing return over `lookbacks`."""
         windows = self.lookbacks or (self.lookback,)
         return sum(close.pct_change(lb) for lb in windows) / len(windows)
+
+
+def session_cutoff(now: datetime) -> pd.Timestamp:
+    """The date before which every daily bar is a finished US session.
+
+    Usually the KST date. Between KST midnight and the US close (a catch-up
+    run, or a manual run after midnight) the KST date is already tomorrow while
+    the US session is still trading, so its half-day bar would look finished;
+    the US Eastern date is used then instead."""
+    et = now.astimezone(ET)
+    day = et.date() + timedelta(days=1) if (et.hour, et.minute) >= (16, 30) else et.date()
+    return pd.Timestamp(day)
 
 
 def signal_date(index: pd.DatetimeIndex, today: pd.Timestamp) -> pd.Timestamp | None:
@@ -691,7 +705,7 @@ class Runner:
     def run(self, close: pd.DataFrame | None = None, now: datetime | None = None,
             execute: bool = True) -> dict:
         now = (now or datetime.now(timezone.utc)).astimezone(KST)
-        today = pd.Timestamp(now.date())
+        today = session_cutoff(now)
         self.planned = None  # a --check run records the orders it would send
         self.closes = None
         meta = self._read("meta.json")
