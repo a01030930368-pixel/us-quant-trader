@@ -378,6 +378,8 @@ class Runner:
         """Holdings from the previous state.json, shown when the broker can't
         be read so a failed lookup doesn't look like an empty account."""
         prev = self._read("state.json")
+        if (prev.get("cash") or 0) < 0:  # never fall back to a broken balance
+            prev["cash"] = (self._read("meta.json").get("seen") or {}).get("cash")
         positions = {p["symbol"]: {"qty": p["qty"], "avg_price": p["avg_price"]}
                      for p in prev.get("positions", [])}
         return positions, prev.get("cash")
@@ -746,6 +748,18 @@ class Runner:
             positions, cash = self._last_holdings()
             return self._state(now, meta, alerts=alerts, positions=positions, cash=cash,
                                prices=prices, targets=targets, scores=scores, sig=sig, canary=canary, parts=parts)
+        if cash < 0:
+            # A cash account can't go below zero. Kiwoom's mock server sent
+            # -$95,662 one morning (2026-10-13), which read as a huge withdrawal.
+            # Treat it like a failed lookup: no orders, no records changed.
+            detail = getattr(self.broker, "cash_detail", None)
+            alerts.append({"level": "error", "message":
+                           f"키움이 달러 예수금을 ${cash:,.2f}로 보내왔어요. 나올 수 없는 값이라 "
+                           "지난 기록으로 보여 주고, 이번에는 주문·기록을 하지 않았어요."
+                           + (f" (키움 응답: {detail})" if detail else "")})
+            positions, cash = self._last_holdings()
+            return self._state(now, meta, alerts=alerts, positions=positions, cash=cash,
+                               prices=prices, targets=targets, scores=scores, sig=sig, canary=canary, parts=parts)
         self._reconcile(positions)
         self._settle_fees(meta, cash)
         flow = self._detect_flow(meta, positions, cash, prices)
@@ -841,7 +855,11 @@ class Runner:
                     meta["last_rebalance"] = str(today.date())
                     if self.cfg.staggered:
                         meta["last_weights"] = wanted
+                before_cash = cash
                 positions, cash = self.broker.positions(), self.broker.cash_usd()
+                if cash < 0:  # see above; the fills still settle from the share counts
+                    cash = before_cash - sum(o["value"] if o["side"] == "buy" else -o["value"]
+                                             for o in orders)
                 self._reconcile(positions)
                 self._settle_fees(meta, cash)
 

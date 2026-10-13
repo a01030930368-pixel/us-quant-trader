@@ -842,3 +842,18 @@ def test_lost_order_is_replaced_not_settled_by_the_next_fill(tmp_path, close):
     r.run(close=close, now=CLOSED)                       # not done yet: the next run buys it again
     mine = [t for t in trades(r) if t["symbol"] == sym]
     assert [t["status"] for t in mine] == ["cancelled", "filled"]
+
+
+def test_negative_cash_from_broker_is_not_a_withdrawal(tmp_path, close):
+    r = make_runner(tmp_path)
+    r.run(close=close, now=CLOSED)
+    good = json.loads((r.dir / "state.json").read_text())
+    rows = (r.dir / "equity.jsonl").read_text()
+    real = r.broker.cash_usd
+    r.broker.cash_usd = lambda: real() - 100_000            # Kiwoom mock, 2026-10-13 morning
+    r.broker.cash_detail = {"d0": 2166.38, "d2": -95662.41}
+    state = r.run(close=close, now=CLOSED)
+    assert "예수금" in errors(state) and "d2" in errors(state)
+    assert not (r.dir / "flows.jsonl").exists()
+    assert (r.dir / "equity.jsonl").read_text() == rows
+    assert state["cash"] == good["cash"]
