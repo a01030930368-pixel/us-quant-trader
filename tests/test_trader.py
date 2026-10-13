@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -341,6 +341,25 @@ def test_canary_ignores_todays_partial_bar(close):
     assert sig == pd.Timestamp("2026-10-07") and got == base
 
 
+def test_session_cutoff_after_kst_midnight():
+    from quant.trader.runner import session_cutoff
+    kst = timezone(timedelta(hours=9))
+    assert session_cutoff(datetime(2026, 10, 15, 23, 45, tzinfo=kst)) == pd.Timestamp("2026-10-15")
+    # 01:00 KST = 12:00 New York, Oct 15 still trading: its bar is not finished
+    assert session_cutoff(datetime(2026, 10, 16, 1, 0, tzinfo=kst)) == pd.Timestamp("2026-10-15")
+    assert session_cutoff(datetime(2026, 10, 16, 7, 0, tzinfo=kst)) == pd.Timestamp("2026-10-16")
+    assert session_cutoff(datetime(2026, 12, 16, 1, 0, tzinfo=kst)) == pd.Timestamp("2026-12-15")
+
+
+def test_catch_up_after_midnight_ignores_running_session(tmp_path, close):
+    px = canary_close(close)
+    spiked = px.loc[:"2026-10-08"].copy()
+    spiked.iloc[-1] *= 3  # Oct 8 is still trading at 01:00 KST Oct 9
+    r = canary_runner(tmp_path)
+    s = r.run(close=spiked, now=datetime(2026, 10, 8, 16, tzinfo=timezone.utc), execute=False)
+    assert s["signal"]["as_of"] == "2026-10-07"
+
+
 def test_canary_runner_trades_only_when_target_changes(tmp_path, close):
     px = canary_close(close)
     r = canary_runner(tmp_path)
@@ -369,9 +388,9 @@ def test_switching_strategy_archives_old_records_and_rebalances(tmp_path, close)
     assert not (new.dir / "archive").exists()
 
     s = new.run(close=px.loc[:"2026-10-08"], now=datetime(2026, 10, 9, 15, tzinfo=timezone.utc))
-    arch = new.dir / "archive" / "momentum_blend_multi_2026-10-10"
+    arch = new.dir / "archive" / "momentum_blend_multi_2026-10-09"
     assert (arch / "trades.jsonl").exists() and (arch / "equity.jsonl").exists()
-    assert s["started_at"] == "2026-10-10"
+    assert s["started_at"] == "2026-10-09"  # 00:00 KST Oct 10 = the Oct 9 US session
     assert s["strategy"]["id"] == "momentum_blend_multi_canary_eem_t4"
     fresh = trades(new)
     assert fresh and all(t["note"] == "분할 리밸런싱" for t in fresh)
