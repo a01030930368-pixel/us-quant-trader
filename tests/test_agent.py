@@ -416,3 +416,14 @@ def test_withdraw_api_and_command(tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "read_state", dict)
     rep = agent.readiness_report()
     assert rep["flows"]["paper"][0]["amount"] == 500.0 and rep["flows"]["live"] == []
+
+
+def test_chart_endpoint(server, monkeypatch):
+    from quant import live
+    seen = []
+    monkeypatch.setattr(live, "history", lambda sym, rng: seen.append((sym, rng)) or {"points": []})
+    url, *_ = server
+    code, body = call(url + "/api/chart?symbol=TQQQ&range=1Y")
+    assert code == 200 and json.loads(body) == {"points": []} and seen == [("TQQQ", "1Y")]
+    call(url + "/api/chart?symbol=QQQ")
+    assert seen[-1] == ("QQQ", "1M")

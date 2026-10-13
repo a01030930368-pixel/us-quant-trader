@@ -585,6 +585,10 @@ class Handler(BaseHTTPRequestHandler):
             from quant import live
             symbols = live.clean_symbols(parse_qs(urlsplit(self.path).query).get("symbols", [""])[0])
             return self._json(200, live.quotes(symbols))
+        if path == "/api/chart":  # one symbol's price history for the holding chart window
+            from quant import live
+            q = parse_qs(urlsplit(self.path).query)
+            return self._json(200, live.history(q.get("symbol", [""])[0], q.get("range", ["1M"])[0]))
         self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
