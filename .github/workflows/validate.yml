@@ -1,12 +1,7 @@
 # Actions 탭 -> validate -> Run workflow: 혼합 전략 정밀 검증 리포트를 만듭니다.
 name: validate
 on:
-  # Also runs automatically when the validation code changes.
-  push:
-    paths:
-      - "scripts/validate_strategy.py"
-      - "quant/**"
-      - ".github/workflows/validate.yml"
+  # 수동 실행만 (Actions 사용 시간 절약). Actions 탭 -> 이 워크플로 -> Run workflow
   workflow_dispatch:
     inputs:
       aggr_share:

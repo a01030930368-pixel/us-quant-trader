@@ -1,12 +1,7 @@
 # Actions 탭 -> improve -> Run workflow: 50/50 개선 실험 리포트를 만듭니다.
 name: improve
 on:
-  # Also runs automatically when the experiment or strategy code changes.
-  push:
-    paths:
-      - "scripts/improve_strategy.py"
-      - "quant/strategies.py"
-      - ".github/workflows/improve.yml"
+  # 수동 실행만 (Actions 사용 시간 절약). Actions 탭 -> 이 워크플로 -> Run workflow
   workflow_dispatch:
 jobs:
   improve:

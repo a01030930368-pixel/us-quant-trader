@@ -1,10 +1,7 @@
 # Actions 탭 -> audit -> Run workflow: 모의투자 전략(EEM 카나리아) 독립 검증 리포트를 만듭니다.
 name: audit
 on:
-  push:
-    paths:
-      - "scripts/audit_canary.py"
-      - ".github/workflows/audit.yml"
+  # 수동 실행만 (Actions 사용 시간 절약). Actions 탭 -> 이 워크플로 -> Run workflow
   workflow_dispatch:
 jobs:
   audit:
