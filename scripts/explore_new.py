@@ -153,6 +153,11 @@ def families(c, high, low, vix, macro):
             [dict(asset=a, sma_months=m, ur_months=u, hold=h) for (a, h), m, u in itertools.product(
                 [("QQQ", {"QQQ": 0.5, "QQQ3X": 0.5}), ("SPY", {"SPY": 0.5, "SPY3X": 0.5})], [8, 10, 12], [9, 12, 15])],
             lambda p: ns.growth_trend(c, macro["UNRATE"], **p)),
+        "업종 단기 반전": (
+            "지난 한 달 가장 많이 빠진 업종 몇 개를 균등 보유. 월 1회, 4분할",
+            dict(top_n=3, lookback=21),
+            [dict(top_n=n, lookback=lb) for n, lb in itertools.product([2, 3, 4], [5, 10, 21, 42])],
+            lambda p: ns.sector_reversal(c, **p)),
     }
 
 
@@ -168,6 +173,37 @@ def passes(r, ref, irx) -> list[bool]:
         _, mdd_ref, sh_ref = stats(ac.per(ref, p), irx)
         out.append(sh > sh_ref and mdd >= mdd_ref - MDD_SLACK)
     return out
+
+
+MIX_FAMILIES = ["저변동성 업종", "고정 배분", "여러 자산 추세추종", "주식·채권 위험균형", "경기+가격 추세 (GTT)"]
+
+
+def mix_section(c, o, irx, canary, fams, returns):
+    """Canary + one diversifier at several shares (daily rebalanced), and for
+    the low-volatility sectors every nearby setting at a 30% share."""
+    lines = ["## 카나리아에 섞으면 (정밀 검사)\n",
+             "카나리아 비중을 줄이고 그만큼 새 전략을 섞었을 때. 매일 비중을 맞춘다고 가정(비용 미반영, 실제로는 월 1회면 충분).\n",
+             "| 섞은 전략 | 비중 | 2006~07 연수익/낙폭/샤프 | 2008~14 | 2015~ | 세 구간 모두 카나리아보다 샤프↑ |",
+             "|---|---|---|---|---|---|"]
+
+    def cells(r):
+        return [stats(ac.per(r, p), irx) for p in PERIODS.values()]
+    base = cells(canary)
+    lines.append("| 카나리아 단독 | 0% | " + " | ".join(f"{pct(a)} / {pct(b)} / {s:.2f}" for a, b, s in base) + " | - |")
+    for name in MIX_FAMILIES:
+        for share in (0.2, 0.3, 0.5):
+            m = cells((1 - share) * canary + share * returns[name])
+            ok = all(x[2] > y[2] and x[1] >= y[1] - MDD_SLACK for x, y in zip(m, base))
+            lines.append(f"| {name} | {share:.0%} | " + " | ".join(f"{pct(a)} / {pct(b)} / {s:.2f}" for a, b, s in m)
+                         + f" | {'예' if ok else '아니오'} |")
+    desc, base_p, grid, build = fams["저변동성 업종"]
+    n_ok = 0
+    for p in grid:
+        r = run_backtest(c, build(p), COST, o).returns
+        m = cells(0.7 * canary + 0.3 * r)
+        n_ok += all(x[2] > y[2] and x[1] >= y[1] - MDD_SLACK for x, y in zip(m, base))
+    lines += ["", f"저변동성 업종 30% 섞기를 근처 설정 {len(grid)}개로 바꿔 봐도 세 구간 모두 카나리아보다 나은 경우: {n_ok}/{len(grid)}개.\n"]
+    return lines
 
 
 def pct(x):
@@ -230,7 +266,8 @@ def main():
         detail += lines
 
     out += ["## 요약\n", pd.DataFrame(rows).to_markdown(index=False), "",
-            "'구간별 통과'는 2006~07 / 2008~14 / 2015~ 순서.\n", "## 계열별 자세히\n", *detail]
+            "'구간별 통과'는 2006~07 / 2008~14 / 2015~ 순서.\n",
+            *mix_section(c, o, irx, canary, fams, returns), "## 계열별 자세히\n", *detail]
     Path("reports").mkdir(exist_ok=True)
     Path("reports/explore.md").write_text("\n".join(out), encoding="utf-8")
     pd.DataFrame(returns).loc["2005-12-01":].round(6).to_csv("reports/explore_returns.csv")

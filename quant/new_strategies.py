@@ -297,3 +297,19 @@ def leveraged_parity(prices: pd.DataFrame, assets: tuple[str, ...] = ("SPY3X", "
                      tranches: int = 4, spacing: int = 5) -> pd.DataFrame:
     """HFEA with volatility-based weights instead of fixed 55/45."""
     return risk_parity(prices, assets, vol_window, tranches, spacing)
+
+
+# ---------- 12. sector short-term reversal ----------
+
+def sector_reversal(prices: pd.DataFrame, top_n: int = 3, lookback: int = 21,
+                    tranches: int = 4, spacing: int = 5) -> pd.DataFrame:
+    """Buy the `top_n` sectors that fell the most over the last month
+    (short-term overreaction tends to partly reverse), equal weight."""
+    ret = prices[SECTORS].pct_change(lookback)
+    rank = ret.rank(axis=1, method="first")
+    sig = (rank <= top_n).astype(float) / top_n
+    sig = sig.where(ret.notna().all(axis=1), 0.0)
+
+    def build(offset):
+        return _hold_monthly(prices, sig, offset)
+    return _tranches(build, prices, tranches, spacing)
