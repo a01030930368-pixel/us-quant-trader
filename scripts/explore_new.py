@@ -137,6 +137,22 @@ def families(c, high, low, vix, macro):
             dict(stock_share=0.55),
             [dict(stock_share=x) for x in (0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7)],
             lambda p: ns.leveraged_pair(c, **p)),
+        "3배 주식+3배 채권, 변동성 비중": (
+            "UPRO와 TMF를 변동성 반비례로 섞음. 월 1회, 4분할",
+            dict(vol_window=63),
+            [dict(vol_window=v) for v in (21, 42, 63, 126, 252)],
+            lambda p: ns.leveraged_parity(c, **p)),
+        "변동성 관리 SPY": (
+            "최근 변동성이 낮으면 SPY 비중을 최대 2배(UPRO 섞어서)까지, 높으면 줄이고 현금. 월 1회",
+            dict(target=0.15, window=21, max_lev=2.0),
+            [dict(target=t, window=w, max_lev=m) for t, w, m in itertools.product([0.12, 0.15, 0.18], [21, 63], [1.5, 2.0])],
+            lambda p: ns.vol_managed(c, **p)),
+        "경기+가격 추세 (GTT), 나스닥 2배": (
+            "GTT 신호는 그대로(나스닥 기준), 투자 중엔 QQQ 50% + TQQQ 50%(=2배), 위험 신호면 IEF",
+            dict(asset="QQQ", sma_months=10, ur_months=12, hold={"QQQ": 0.5, "QQQ3X": 0.5}),
+            [dict(asset=a, sma_months=m, ur_months=u, hold=h) for (a, h), m, u in itertools.product(
+                [("QQQ", {"QQQ": 0.5, "QQQ3X": 0.5}), ("SPY", {"SPY": 0.5, "SPY3X": 0.5})], [8, 10, 12], [9, 12, 15])],
+            lambda p: ns.growth_trend(c, macro["UNRATE"], **p)),
     }
 
 
@@ -164,7 +180,7 @@ def main():
     fams = families(c, high, low, vix, macro)
     vix_start = vix["^VIX3M"].first_valid_index()
 
-    out = ["# 새 전략 계열 탐색\n",
+    out = ["# 새 전략 계열 탐색 (지금까지 전부)\n",
            f"데이터 {c.index[0].date()} ~ {c.index[-1].date()}. 신호는 종가, 체결은 다음 날 시가, 편도 비용 25bp. "
            "샤프는 단기국채 금리를 뺀 기준.\n",
            "판정 기준(결과를 보기 전에 고정): 세 구간(2006~07 / 2008~14 / 2015~) 모두 SPY보다 샤프가 높고 "

@@ -188,10 +188,12 @@ def monthly_macro_at(index: pd.DatetimeIndex, series: pd.Series, release_day: in
 
 def growth_trend(prices: pd.DataFrame, unrate: pd.Series, asset: str = "SPY", sma_months: int = 10,
                  ur_months: int = 12, safe: str | None = "IEF", tranches: int = 1,
-                 spacing: int = 5) -> pd.DataFrame:
+                 spacing: int = 5, hold: dict | None = None) -> pd.DataFrame:
     """Philosophical Economics' Growth-Trend Timing: stay invested unless BOTH
     the unemployment rate is above its 12-month average (economy weakening)
-    AND the price is below its 10-month average. Checked monthly."""
+    AND the price is below its 10-month average. Checked monthly.
+    hold: what to own while invested (default 100% `asset`), e.g.
+    {"QQQ": .5, "QQQ3X": .5} for 2x Nasdaq; `asset` is still the trend signal."""
     ur = unrate.dropna()
     ur_up = (ur > ur.rolling(ur_months).mean()).astype(float)
     ur_up = monthly_macro_at(prices.index, ur_up).fillna(0.0) > 0
@@ -201,7 +203,8 @@ def growth_trend(prices: pd.DataFrame, unrate: pd.Series, asset: str = "SPY", sm
     below = px < sma
     out = (ur_up & below).astype(float)
     sig = _frame(prices)
-    sig[asset] = 1 - out
+    for a, share in (hold or {asset: 1.0}).items():
+        sig[a] = share * (1 - out)
 
     def build(offset):
         w = _hold_monthly(prices, sig, offset)
@@ -269,3 +272,28 @@ def leveraged_pair(prices: pd.DataFrame, stock: str = "SPY3X", bond: str = "TLT3
     w[stock] = stock_share
     w[bond] = 1 - stock_share
     return w
+
+
+# ---------- 11. volatility-managed stocks (Moreira & Muir 2017) ----------
+
+def vol_managed(prices: pd.DataFrame, asset: str = "SPY", lev_asset: str = "SPY3X", target: float = 0.15,
+                window: int = 21, max_lev: float = 2.0) -> pd.DataFrame:
+    """Scale stock exposure by target / recent realized volatility, between 0
+    and `max_lev` times. Exposure above 1x comes from the 3x ETF:
+    x in `lev_asset` and 1 - x in `asset` gives 1 + 2x exposure. Rebalanced
+    at month ends only, using the volatility of the last `window` sessions."""
+    vol = prices[asset].pct_change().rolling(window).std() * np.sqrt(252)
+    lev = (target / vol).clip(upper=max_lev).fillna(1.0)
+    ends = _period_ends(prices.index, "M")
+    lev = lev.where(lev.index.isin(ends)).ffill().fillna(1.0)
+    w = _frame(prices)
+    over = ((lev - 1) / 2).clip(lower=0)
+    w[lev_asset] = over
+    w[asset] = lev.clip(upper=1) - over
+    return w
+
+
+def leveraged_parity(prices: pd.DataFrame, assets: tuple[str, ...] = ("SPY3X", "TLT3X"), vol_window: int = 63,
+                     tranches: int = 4, spacing: int = 5) -> pd.DataFrame:
+    """HFEA with volatility-based weights instead of fixed 55/45."""
+    return risk_parity(prices, assets, vol_window, tranches, spacing)

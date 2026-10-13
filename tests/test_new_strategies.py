@@ -35,6 +35,8 @@ def builders(close, high, low, vix, vix3m):
         "halloween": lambda c: ns.halloween(c),
         "parity": lambda c: ns.risk_parity(c),
         "hfea": lambda c: ns.leveraged_pair(c),
+        "hfea_vol": lambda c: ns.leveraged_parity(c),
+        "volman": lambda c: ns.vol_managed(c),
     }
 
 
@@ -42,7 +44,7 @@ UNRATE = pd.Series(np.random.default_rng(1).uniform(3, 9, 80),
                    index=pd.date_range("2003-01-01", periods=80, freq="MS"))
 
 
-@pytest.mark.parametrize("name", ["rsi", "ibs", "tom", "trend", "vix", "static", "lowvol", "gtt", "credit", "halloween", "parity", "hfea"])
+@pytest.mark.parametrize("name", ["rsi", "ibs", "tom", "trend", "vix", "static", "lowvol", "gtt", "credit", "halloween", "parity", "hfea", "hfea_vol", "volman"])
 def test_weights_valid_and_no_lookahead(data, name):
     close, high, low, vix, vix3m = data
     build = builders(close, high, low, vix, vix3m)[name]
@@ -64,3 +66,13 @@ def test_macro_value_used_only_after_release():
     assert pd.isna(at.loc["2020-02-07"])     # January figure not published yet
     assert at.loc["2020-02-28"] == 1.0       # known by the February month end
     assert at.loc["2020-03-31"] == 2.0
+
+
+def test_vol_managed_exposure():
+    idx = pd.bdate_range("2020-01-01", periods=300)
+    calm = pd.DataFrame({"SPY": 100 * np.exp(np.cumsum(np.full(300, 0.0005) + np.tile([0.001, -0.001], 150))),
+                         "SPY3X": 100.0}, index=idx)
+    w = ns.vol_managed(calm, target=0.15, max_lev=2.0)
+    expo = w["SPY"] + 3 * w["SPY3X"]
+    assert expo.iloc[-1] == pytest.approx(2.0)
+    assert (w.sum(axis=1) <= 1 + 1e-9).all()
