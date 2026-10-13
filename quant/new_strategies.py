@@ -313,3 +313,71 @@ def sector_reversal(prices: pd.DataFrame, top_n: int = 3, lookback: int = 21,
     def build(offset):
         return _hold_monthly(prices, sig, offset)
     return _tranches(build, prices, tranches, spacing)
+
+
+# ---------- 13. Faber's Ivy portfolio (GTAA 5) ----------
+
+IVY = ["SPY", "EFA", "IEF", "VNQ", "DBC"]
+
+
+def ivy(prices: pd.DataFrame, assets: list[str] | None = None, sma_months: int = 10,
+        idle: str | None = "SHY", tranches: int = 4, spacing: int = 5) -> pd.DataFrame:
+    """Mebane Faber, "A Quantitative Approach to Tactical Asset Allocation"
+    (2007): five asset classes, equal weight; each one is held only while its
+    month-end price is above its 10-month average, otherwise that fifth sits
+    in T-bills (SHY)."""
+    uni = [a for a in (assets or IVY) if a in prices]
+    px = prices[uni]
+    sma = px.rolling(21 * sma_months).mean()
+    sig = ((px > sma) & sma.notna()).astype(float) / len(uni)
+
+    def build(offset):
+        return _idle(_hold_monthly(prices, sig, offset), idle)
+    return _tranches(build, prices, tranches, spacing)
+
+
+# ---------- 14. gold timed by real interest rates ----------
+
+def gold_real_rate(prices: pd.DataFrame, real_yield: pd.Series, window: int = 63, asset: str = "GLD",
+                   idle: str | None = "SHY", tranches: int = 4, spacing: int = 5) -> pd.DataFrame:
+    """Gold pays no interest, so it tends to rise when real (inflation-
+    protected) Treasury yields fall. Hold gold while the 10-year TIPS yield is
+    below its `window`-day average, else T-bills. Yield used one day late."""
+    ry = real_yield.reindex(prices.index).ffill().shift(1)
+    falling = (ry < ry.rolling(window).mean()).astype(float)
+    sig = _frame(prices)
+    sig[asset] = falling.where(prices[asset].notna(), 0.0)
+
+    def build(offset):
+        return _idle(_hold_monthly(prices, sig, offset), idle)
+    return _tranches(build, prices, tranches, spacing)
+
+
+# ---------- 15. leveraged low volatility ("betting against beta") ----------
+
+def levered_low_vol(prices: pd.DataFrame, lev_share: float = 0.2, lev_asset: str = "SPY3X",
+                    **params) -> pd.DataFrame:
+    """Frazzini & Pedersen: calm stocks earn more per unit of risk, so hold
+    the low-volatility sectors and add market exposure with a 3x ETF instead
+    of holding risky stocks. `lev_share` of the money goes to the 3x ETF."""
+    w = low_vol_sectors(prices, **params) * (1 - lev_share)
+    w[lev_asset] = w[lev_asset] + lev_share
+    return w
+
+
+# ---------- 16. yield curve + price trend ----------
+
+def curve_trend(prices: pd.DataFrame, slope: pd.Series, asset: str = "SPY", memory_months: int = 12,
+                sma_months: int = 10, safe: str | None = "IEF") -> pd.DataFrame:
+    """Recession signal from the yield curve (10-year minus 3-month Treasury,
+    Estrella & Mishkin): leave stocks only when the curve was inverted at some
+    point in the last `memory_months` AND the price is below its 10-month
+    average. Checked at month ends; the curve is used one day late."""
+    sl = slope.reindex(prices.index).ffill().shift(1)
+    inverted = (sl < 0).astype(float).rolling(21 * memory_months, min_periods=1).max() > 0
+    px = prices[asset]
+    ends = _period_ends(prices.index, "M")
+    sma = px.loc[ends].rolling(sma_months).mean().reindex(prices.index).ffill()
+    sig = _frame(prices)
+    sig[asset] = 1 - (inverted & (px < sma)).astype(float)
+    return _idle(_hold_monthly(prices, sig, 0), safe)

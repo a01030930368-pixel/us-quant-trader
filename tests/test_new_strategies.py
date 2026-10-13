@@ -38,6 +38,10 @@ def builders(close, high, low, vix, vix3m):
         "hfea_vol": lambda c: ns.leveraged_parity(c),
         "volman": lambda c: ns.vol_managed(c),
         "reversal": lambda c: ns.sector_reversal(c),
+        "ivy": lambda c: ns.ivy(c),
+        "gold": lambda c: ns.gold_real_rate(c, vix),
+        "bab": lambda c: ns.levered_low_vol(c),
+        "curve": lambda c: ns.curve_trend(c, vix - 20),
     }
 
 
@@ -45,7 +49,7 @@ UNRATE = pd.Series(np.random.default_rng(1).uniform(3, 9, 80),
                    index=pd.date_range("2003-01-01", periods=80, freq="MS"))
 
 
-@pytest.mark.parametrize("name", ["rsi", "ibs", "tom", "trend", "vix", "static", "lowvol", "gtt", "credit", "halloween", "parity", "hfea", "hfea_vol", "volman", "reversal"])
+@pytest.mark.parametrize("name", ["rsi", "ibs", "tom", "trend", "vix", "static", "lowvol", "gtt", "credit", "halloween", "parity", "hfea", "hfea_vol", "volman", "reversal", "ivy", "gold", "bab", "curve"])
 def test_weights_valid_and_no_lookahead(data, name):
     close, high, low, vix, vix3m = data
     build = builders(close, high, low, vix, vix3m)[name]

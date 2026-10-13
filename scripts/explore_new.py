@@ -51,7 +51,7 @@ def load_all():
     vix = load_prices(["^VIX", "^VIX3M"], "2004-01-01").reindex(rc.index).ffill()
     c, o = add_tlt3x(c, o, irx)
     canary = ac.run(rc, ro, ac.PAPER)
-    macro = {"UNRATE": load_fred("UNRATE"), "BAA10Y": load_fred("BAA10Y")}
+    macro = {k: load_fred(k) for k in ("UNRATE", "BAA10Y", "DFII10", "T10Y3M")}
     return c, o, irx, high, low, vix, canary, macro
 
 
@@ -158,6 +158,26 @@ def families(c, high, low, vix, macro):
             dict(top_n=3, lookback=21),
             [dict(top_n=n, lookback=lb) for n, lb in itertools.product([2, 3, 4], [5, 10, 21, 42])],
             lambda p: ns.sector_reversal(c, **p)),
+        "아이비 포트폴리오 (Faber)": (
+            "SPY·EFA·IEF·VNQ·DBC 5등분, 각자 10개월 평균 위일 때만 보유, 아니면 그 몫은 SHY. 월 1회, 4분할",
+            dict(sma_months=10),
+            [dict(sma_months=m) for m in (6, 8, 10, 12)] + [dict(sma_months=10, assets=["SPY", "EFA", "IEF", "VNQ", "GLD"])],
+            lambda p: ns.ivy(c, **p)),
+        "금 + 실질금리": (
+            "10년 물가연동채 금리가 3개월 평균보다 낮아지는 중이면 금(GLD), 아니면 SHY. 월 1회, 4분할",
+            dict(window=63),
+            [dict(window=w) for w in (21, 42, 63, 126, 252)],
+            lambda p: ns.gold_real_rate(c, macro["DFII10"], **p)),
+        "저변동성 업종 + 레버리지 (BAB)": (
+            "저변동성 업종 80% + UPRO 20% (주식 노출 약 1.4배). 월 1회, 4분할",
+            dict(lev_share=0.2),
+            [dict(lev_share=x, top_n=n) for x, n in itertools.product([0.1, 0.15, 0.2, 0.25, 0.3], [3, 4])],
+            lambda p: ns.levered_low_vol(c, **p)),
+        "금리차+가격 추세": (
+            "최근 1년 안에 장단기 금리 역전(10년-3개월<0)이 있었고 SPY가 10개월 평균 아래면 IEF, 아니면 SPY. 월 1회",
+            dict(memory_months=12, sma_months=10),
+            [dict(memory_months=a, sma_months=b) for a, b in itertools.product([6, 12, 24], [8, 10, 12])],
+            lambda p: ns.curve_trend(c, macro["T10Y3M"], **p)),
     }
 
 
