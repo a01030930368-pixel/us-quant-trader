@@ -182,6 +182,9 @@ class KiwoomBroker:
         after pending settlements: the furthest-out D-day USD deposit
         (d4 -> d0) that the response fills in."""
         data = self.call("/api/us/acnt", "ust21160", {})
+        # Kept for the error message when the answer makes no sense (negative).
+        self.cash_detail = {d: _num(data.get(f"{d}_usd_fx_entr")) for d in ("d0", "d1", "d2", "d3", "d4")
+                            if str(data.get(f"{d}_usd_fx_entr") or "").strip()}
         for day in ("d4", "d3", "d2", "d1", "d0"):
             value = str(data.get(f"{day}_usd_fx_entr") or "").strip()
             if value:
