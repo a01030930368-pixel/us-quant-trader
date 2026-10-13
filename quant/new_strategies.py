@@ -381,3 +381,43 @@ def curve_trend(prices: pd.DataFrame, slope: pd.Series, asset: str = "SPY", memo
     sig = _frame(prices)
     sig[asset] = 1 - (inverted & (px < sma)).astype(float)
     return _idle(_hold_monthly(prices, sig, 0), safe)
+
+
+# ---------- 17. paired switching (Maillard 2018) ----------
+
+def paired_switch(prices: pd.DataFrame, pair: tuple[str, str] = ("SPY", "TLT"), lookback: int = 63,
+                  tranches: int = 4, spacing: int = 5) -> pd.DataFrame:
+    """Hold whichever of the two (stocks or long Treasuries) did better over
+    the last quarter; the pair is negatively correlated, so one of them is
+    usually working. Checked monthly, 4 tranches."""
+    a, b = pair
+    ret = prices[[a, b]].pct_change(lookback)
+    sig = _frame(prices)
+    sig[a] = (ret[a] >= ret[b]).astype(float).where(ret.notna().all(axis=1), 0.5)
+    sig[b] = 1 - sig[a]
+
+    def build(offset):
+        return _hold_monthly(prices, sig, offset)
+    return _tranches(build, prices, tranches, spacing)
+
+
+# ---------- 18. buy the fear with leverage ----------
+
+def dip_leverage(prices: pd.DataFrame, asset: str = "SPY", lev_asset: str = "SPY3X", enter: float = 0.20,
+                 leave: float = 0.05, window: int = 252) -> pd.DataFrame:
+    """Contrarian: normally hold the index; once it is more than `enter` below
+    its 1-year high, switch to the 3x ETF and stay until it is back within
+    `leave` of the high. Tests whether big drawdowns are good entry points."""
+    px = prices[asset]
+    dd = (px / px.rolling(window, min_periods=1).max() - 1).values
+    pos, levd = np.zeros(len(px)), False
+    for i in range(len(px)):
+        if not levd and dd[i] <= -enter:
+            levd = True
+        elif levd and dd[i] >= -leave:
+            levd = False
+        pos[i] = levd
+    w = _frame(prices)
+    w[lev_asset] = pos
+    w[asset] = 1 - pos
+    return w

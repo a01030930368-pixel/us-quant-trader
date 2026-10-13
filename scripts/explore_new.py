@@ -178,6 +178,16 @@ def families(c, high, low, vix, macro):
             dict(memory_months=12, sma_months=10),
             [dict(memory_months=a, sma_months=b) for a, b in itertools.product([6, 12, 24], [8, 10, 12])],
             lambda p: ns.curve_trend(c, macro["T10Y3M"], **p)),
+        "주식↔장기채 번갈아 (Paired Switching)": (
+            "SPY와 TLT 중 최근 3개월 더 오른 쪽 하나만 보유. 월 1회, 4분할",
+            dict(pair=("SPY", "TLT"), lookback=63),
+            [dict(pair=pr, lookback=lb) for pr, lb in itertools.product([("SPY", "TLT"), ("QQQ", "TLT"), ("SPY", "IEF")], [42, 63, 126])],
+            lambda p: ns.paired_switch(c, **p)),
+        "공포 때 3배 매수": (
+            "평소엔 SPY, 1년 고점 대비 20% 넘게 빠지면 UPRO로 바꾸고 고점 5% 안으로 회복하면 다시 SPY",
+            dict(enter=0.20, leave=0.05),
+            [dict(enter=e, leave=l) for e, l in itertools.product([0.15, 0.2, 0.25, 0.3], [0.0, 0.05, 0.1])],
+            lambda p: ns.dip_leverage(c, **p)),
     }
 
 
