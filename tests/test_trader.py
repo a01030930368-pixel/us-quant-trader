@@ -833,3 +833,12 @@ def test_market_open_window():
     assert Runner._market_open(OPEN) and not Runner._market_open(CLOSED)
     assert not Runner._market_open(datetime(2026, 10, 10, 15, 0, tzinfo=timezone.utc))  # Saturday
     assert not Runner._market_open(datetime(2026, 10, 7, 19, 58, tzinfo=timezone.utc))  # 2 min to close
+
+
+def test_lost_order_is_replaced_not_settled_by_the_next_fill(tmp_path, close):
+    sym = first_buy(tmp_path, close)
+    r = silent_runner(tmp_path, drop=[sym])
+    r.run(close=close, now=CLOSED)                       # no reply, market closed: stays pending
+    r.run(close=close, now=CLOSED)                       # not done yet: the next run buys it again
+    mine = [t for t in trades(r) if t["symbol"] == sym]
+    assert [t["status"] for t in mine] == ["cancelled", "filled"]

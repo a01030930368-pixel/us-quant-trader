@@ -415,6 +415,28 @@ class Runner:
                            encoding="utf-8")
             os.replace(tmp, p)
 
+    def _supersede(self, orders: list[dict]) -> None:
+        """Orders still "pending" (no shares arrived yet) for a symbol and side
+        that is ordered again now are replaced: the new plan was made from the
+        actual balance, so the old order never went through. Without this the
+        new fill would settle the old record too (2026-10-12: a TQQQ buy that got
+        no reply was counted twice)."""
+        p = self.dir / "trades.jsonl"
+        again = {(o["symbol"], o["side"]) for o in orders}
+        if not p.exists() or not again:
+            return
+        rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]
+        changed = False
+        for r in rows:
+            if r.get("status") == "pending" and (r.get("symbol"), r.get("side")) in again:
+                r["status"], r["message"] = "cancelled", "잔고에 들어오지 않아 다음 실행에서 다시 주문"
+                changed = True
+        if changed:
+            tmp = self.dir / ".trades.jsonl.tmp"
+            tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+                           encoding="utf-8")
+            os.replace(tmp, p)
+
     def _settle_fees(self, meta: dict, cash: float) -> None:
         """Kiwoom reports neither fills nor fees, but takes the fee out of cash.
         Once every order of the last batch has settled, the fee is the cash
@@ -426,7 +448,8 @@ class Runner:
         if not batch or not p.exists():
             return
         rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]
-        mine = [r for r in rows if r.get("time") == batch["time"] and r.get("status") != "rejected"]
+        mine = [r for r in rows if r.get("time") == batch["time"]
+                and r.get("status") not in ("rejected", "cancelled")]
         if any(r.get("status") in ("pending", "partial") for r in mine):
             return  # wait for the fills
         meta.pop("fee_batch", None)
@@ -777,6 +800,7 @@ class Runner:
                 sleeve_of = {t["symbol"]: t["sleeve"] for t in targets}
                 meta["fee_batch"] = {"time": now.isoformat(timespec="seconds"), "cash_before": cash}
                 self._announce(orders)
+                self._supersede(orders)
                 all_ok = True
 
                 def record(o: dict, res: dict) -> bool:
