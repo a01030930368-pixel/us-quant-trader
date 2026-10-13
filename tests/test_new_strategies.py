@@ -5,7 +5,7 @@ import pytest
 
 from quant import new_strategies as ns
 
-TICKERS = ["SPY", "QQQ", "IWM", "EFA", "EEM", "TLT", "IEF", "SHY", "GLD", "DBC", "VNQ", *ns.SECTORS]
+TICKERS = ["SPY", "QQQ", "IWM", "EFA", "EEM", "TLT", "IEF", "SHY", "GLD", "DBC", "VNQ", "SPY3X", "TLT3X", *ns.SECTORS]
 
 
 @pytest.fixture(scope="module")
@@ -30,10 +30,19 @@ def builders(close, high, low, vix, vix3m):
         "vix": lambda c: ns.vix_term(c, vix.loc[c.index], vix3m.loc[c.index]),
         "static": lambda c: ns.static_mix(c),
         "lowvol": lambda c: ns.low_vol_sectors(c),
+        "gtt": lambda c: ns.growth_trend(c, UNRATE),
+        "credit": lambda c: ns.credit_trend(c, vix),
+        "halloween": lambda c: ns.halloween(c),
+        "parity": lambda c: ns.risk_parity(c),
+        "hfea": lambda c: ns.leveraged_pair(c),
     }
 
 
-@pytest.mark.parametrize("name", ["rsi", "ibs", "tom", "trend", "vix", "static", "lowvol"])
+UNRATE = pd.Series(np.random.default_rng(1).uniform(3, 9, 80),
+                   index=pd.date_range("2003-01-01", periods=80, freq="MS"))
+
+
+@pytest.mark.parametrize("name", ["rsi", "ibs", "tom", "trend", "vix", "static", "lowvol", "gtt", "credit", "halloween", "parity", "hfea"])
 def test_weights_valid_and_no_lookahead(data, name):
     close, high, low, vix, vix3m = data
     build = builders(close, high, low, vix, vix3m)[name]
@@ -44,5 +53,14 @@ def test_weights_valid_and_no_lookahead(data, name):
     # Weights decided up to day `cut` must not change when later prices change.
     # turn_of_month looks one session ahead on the calendar only (known in advance).
     part = build(close.iloc[:cut + 1])
-    end = cut - 1 if name == "tom" else cut
+    end = cut - 1 if name in ("tom", "halloween") else cut
     pd.testing.assert_frame_equal(full.iloc[:end], part.iloc[:end])
+
+
+def test_macro_value_used_only_after_release():
+    idx = pd.bdate_range("2020-01-01", "2020-04-30")
+    s = pd.Series([1.0, 2.0, 3.0], index=pd.to_datetime(["2020-01-01", "2020-02-01", "2020-03-01"]))
+    at = ns.monthly_macro_at(idx, s)
+    assert pd.isna(at.loc["2020-02-07"])     # January figure not published yet
+    assert at.loc["2020-02-28"] == 1.0       # known by the February month end
+    assert at.loc["2020-03-31"] == 2.0

@@ -2,7 +2,8 @@
 
 Each function returns target weights decided with data up to each row's close
 (the backtest trades them at the next open). Money not assigned to a risky
-asset goes to `idle` (a short bond ETF by default) instead of earning nothing.
+asset goes to `idle` (a bond ETF) when given; strategies that trade often keep
+it in cash by default, since switching into bonds and back doubles the costs.
 These are research candidates only; nothing here is wired into the runner.
 """
 from __future__ import annotations
@@ -45,7 +46,7 @@ def rsi(px: pd.Series, n: int = 2) -> pd.Series:
 
 
 def rsi_dip(prices: pd.DataFrame, asset: str = "SPY", entry: float = 10, exit_: float = 70,
-            trend: int = 200, idle: str | None = "SHY") -> pd.DataFrame:
+            trend: int = 200, idle: str | None = None) -> pd.DataFrame:
     """Connors RSI(2): buy an oversold close while above the long average,
     sell when RSI recovers or the trend breaks."""
     px = prices[asset]
@@ -63,7 +64,7 @@ def rsi_dip(prices: pd.DataFrame, asset: str = "SPY", entry: float = 10, exit_: 
 
 
 def ibs_dip(prices: pd.DataFrame, high: pd.DataFrame, low: pd.DataFrame, asset: str = "SPY",
-            entry: float = 0.2, exit_: float = 0.7, idle: str | None = "SHY") -> pd.DataFrame:
+            entry: float = 0.2, exit_: float = 0.7, idle: str | None = None) -> pd.DataFrame:
     """Internal bar strength (close near the day's low) mean reversion."""
     c, h, lo = prices[asset], high[asset].reindex(prices.index), low[asset].reindex(prices.index)
     ibs = ((c - lo) / (h - lo).replace(0, np.nan)).fillna(0.5).values
@@ -81,8 +82,9 @@ def ibs_dip(prices: pd.DataFrame, high: pd.DataFrame, low: pd.DataFrame, asset: 
 
 # ---------- 2. calendar ----------
 
+
 def turn_of_month(prices: pd.DataFrame, asset: str = "SPY", before: int = 1, after: int = 3,
-                  idle: str | None = "IEF") -> pd.DataFrame:
+                  idle: str | None = None) -> pd.DataFrame:
     """Hold `asset` from `before` sessions before month end to the `after`-th
     session of the new month; the rest of the month sits in `idle`."""
     idx = prices.index
@@ -170,3 +172,100 @@ def low_vol_sectors(prices: pd.DataFrame, top_n: int = 3, vol_window: int = 126,
     def build(offset):
         return _hold_monthly(prices, sig, offset)
     return _tranches(build, prices, tranches, spacing)
+
+
+# ---------- 7. economy + price trend (Growth-Trend Timing) ----------
+
+def monthly_macro_at(index: pd.DatetimeIndex, series: pd.Series, release_day: int = 10) -> pd.Series:
+    """Map a monthly macro series (dated on the 1st of its month) onto daily
+    dates, using only values already published: month m's figure counts from
+    day `release_day` of month m + 1 (US unemployment comes out on the first
+    Friday, so the September figure is known by October 10th)."""
+    s = series.copy()
+    s.index = (s.index.to_period("M") + 1).to_timestamp() + pd.Timedelta(days=release_day - 1)
+    return s.reindex(index.union(s.index)).ffill().reindex(index)
+
+
+def growth_trend(prices: pd.DataFrame, unrate: pd.Series, asset: str = "SPY", sma_months: int = 10,
+                 ur_months: int = 12, safe: str | None = "IEF", tranches: int = 1,
+                 spacing: int = 5) -> pd.DataFrame:
+    """Philosophical Economics' Growth-Trend Timing: stay invested unless BOTH
+    the unemployment rate is above its 12-month average (economy weakening)
+    AND the price is below its 10-month average. Checked monthly."""
+    ur = unrate.dropna()
+    ur_up = (ur > ur.rolling(ur_months).mean()).astype(float)
+    ur_up = monthly_macro_at(prices.index, ur_up).fillna(0.0) > 0
+    px = prices[asset]
+    ends = _period_ends(prices.index, "M")
+    sma = px.loc[ends].rolling(sma_months).mean().reindex(prices.index).ffill()
+    below = px < sma
+    out = (ur_up & below).astype(float)
+    sig = _frame(prices)
+    sig[asset] = 1 - out
+
+    def build(offset):
+        w = _hold_monthly(prices, sig, offset)
+        return _idle(w, safe)
+    return _tranches(build, prices, tranches, spacing)
+
+
+def credit_trend(prices: pd.DataFrame, spread: pd.Series, asset: str = "SPY", spread_window: int = 252,
+                 sma_days: int = 200, safe: str | None = "IEF") -> pd.DataFrame:
+    """Same idea with corporate credit: leave stocks only when the Baa-Treasury
+    spread is above its 1-year average (credit stress building) AND the price
+    is below its 200-day average. Checked daily (the spread is published daily,
+    used one day late to be safe)."""
+    sp = spread.reindex(prices.index).ffill().shift(1)
+    stress = sp > sp.rolling(spread_window).mean()
+    px = prices[asset]
+    below = px < px.rolling(sma_days).mean()
+    w = _frame(prices)
+    w[asset] = 1 - (stress & below).astype(float)
+    return _idle(w, safe)
+
+
+# ---------- 8. seasonality: "sell in May" ----------
+
+def halloween(prices: pd.DataFrame, asset: str = "SPY", in_month: int = 11, out_month: int = 5,
+              safe: str | None = "IEF") -> pd.DataFrame:
+    """Hold stocks from the start of `in_month` until the start of `out_month`
+    (default November to April), bonds the rest of the year."""
+    m = prices.index.month
+    nxt = pd.Series(prices.index, index=prices.index).shift(-1)
+    nxt_month = nxt.dt.month.fillna(m[-1] if len(m) else 1).astype(int).values
+    if in_month < out_month:
+        hold = (nxt_month >= in_month) & (nxt_month < out_month)
+    else:
+        hold = (nxt_month >= in_month) | (nxt_month < out_month)
+    w = _frame(prices)
+    w[asset] = hold.astype(float)  # decided at today's close for tomorrow's month
+    return _idle(w, safe)
+
+
+# ---------- 9. two-asset risk parity ----------
+
+def risk_parity(prices: pd.DataFrame, assets: tuple[str, ...] = ("SPY", "TLT"), vol_window: int = 63,
+                tranches: int = 4, spacing: int = 5) -> pd.DataFrame:
+    """Stocks and long bonds weighted so each contributes the same volatility
+    (inverse-volatility weights), rebalanced monthly in 4 tranches."""
+    a = list(assets)
+    inv = 1 / prices[a].pct_change().rolling(vol_window).std()
+    sig = inv.div(inv.sum(axis=1), axis=0).fillna(0.0)
+
+    def build(offset):
+        return _hold_monthly(prices, sig, offset)
+    return _tranches(build, prices, tranches, spacing)
+
+
+# ---------- 10. leveraged stocks + leveraged bonds (HFEA) ----------
+
+def leveraged_pair(prices: pd.DataFrame, stock: str = "SPY3X", bond: str = "TLT3X",
+                   stock_share: float = 0.55) -> pd.DataFrame:
+    """'Hedgefundie's Excellent Adventure': 3x S&P 500 (UPRO) and 3x long
+    Treasuries (TMF) at fixed weights. Long bonds usually rise when stocks
+    crash, so the pair is far smoother than either alone, but it fails when
+    stocks and bonds fall together (2022). Weights are held at target."""
+    w = _frame(prices)
+    w[stock] = stock_share
+    w[bond] = 1 - stock_share
+    return w

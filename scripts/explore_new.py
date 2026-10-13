@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from quant import new_strategies as ns  # noqa: E402
 from quant.backtest import run_backtest  # noqa: E402
 from quant.data import load_prices  # noqa: E402
+from quant.macro import load_fred  # noqa: E402
 from quant.metrics import monthly_returns  # noqa: E402
 from scripts import audit_canary as ac  # noqa: E402
 
@@ -48,26 +49,46 @@ def load_all():
     high = load_prices(hl, "2004-01-01", field="High").reindex(rc.index)
     low = load_prices(hl, "2004-01-01", field="Low").reindex(rc.index)
     vix = load_prices(["^VIX", "^VIX3M"], "2004-01-01").reindex(rc.index).ffill()
+    c, o = add_tlt3x(c, o, irx)
     canary = ac.run(rc, ro, ac.PAPER)
-    return c, o, irx, high, low, vix, canary
+    macro = {"UNRATE": load_fred("UNRATE"), "BAA10Y": load_fred("BAA10Y")}
+    return c, o, irx, high, low, vix, canary, macro
 
 
-def families(c, high, low, vix):
+def add_tlt3x(c, o, irx, start="2009-05-01"):
+    """3x long Treasuries: simulated before TMF existed (TMF expense ratio
+    plus 2x the T-bill rate for the borrowed part), real TMF afterwards."""
+    c, o = c.copy(), o.copy()
+    daily = c["TLT"].pct_change().fillna(0.0) * 3 - (0.0106 + 2 * irx) / 252
+    c["TLT3X"] = 100 * (1 + daily).cumprod()
+    gap = (o["TLT"] / c["TLT"].shift(1) - 1).fillna(0.0)
+    o["TLT3X"] = c["TLT3X"].shift(1).bfill() * (1 + 3 * gap)
+    tc = load_prices(["TMF"], "2009-04-16").reindex(c.index)["TMF"]
+    to = load_prices(["TMF"], "2009-04-16", field="Open").reindex(c.index)["TMF"]
+    t0 = c.index[c.index >= pd.Timestamp(start)][0]
+    scale = c.at[t0, "TLT3X"] / tc.at[t0]
+    after = c.index >= t0
+    c.loc[after, "TLT3X"] = tc[after] * scale
+    o.loc[after, "TLT3X"] = to[after] * scale
+    return c.ffill(), o.ffill()
+
+
+def families(c, high, low, vix, macro):
     """name -> (description, base params, list of params, builder)."""
     v, v3 = vix["^VIX"], vix["^VIX3M"]
     return {
         "단기 반등 RSI(2)": (
-            "많이 떨어진 날(RSI2 낮음) 상승추세면 사고, 반등하면 팖. 쉬는 돈은 SHY",
+            "많이 떨어진 날(RSI2 낮음) 상승추세면 사고, 반등하면 팖. 쉬는 돈은 현금",
             dict(asset="SPY", entry=10, trend=200),
             [dict(asset=a, entry=e, trend=t) for a, e, t in itertools.product(["SPY", "QQQ"], [5, 10, 15], [100, 200])],
             lambda p: ns.rsi_dip(c, **p)),
         "단기 반등 IBS": (
-            "그날 저가 근처에서 끝나면 사고, 고가 근처에서 끝나면 팖. 쉬는 돈은 SHY",
+            "그날 저가 근처에서 끝나면 사고, 고가 근처에서 끝나면 팖. 쉬는 돈은 현금",
             dict(asset="SPY", entry=0.2, exit_=0.7),
             [dict(asset=a, entry=e, exit_=x) for a, e, x in itertools.product(["SPY", "QQQ"], [0.1, 0.2, 0.3], [0.6, 0.7, 0.8])],
             lambda p: ns.ibs_dip(c, high, low, **p)),
         "월말·월초 효과": (
-            "월말 며칠~월초 며칠만 SPY, 나머지는 IEF",
+            "월말 며칠~월초 며칠만 SPY, 나머지는 현금",
             dict(before=1, after=3),
             [dict(before=b, after=a) for b, a in itertools.product([1, 2, 3], [2, 3, 4])],
             lambda p: ns.turn_of_month(c, **p)),
@@ -91,6 +112,31 @@ def families(c, high, low, vix):
             dict(top_n=3, vol_window=126),
             [dict(top_n=n, vol_window=vw) for n, vw in itertools.product([2, 3, 4], [63, 126, 252])],
             lambda p: ns.low_vol_sectors(c, **p)),
+        "경기+가격 추세 (GTT)": (
+            "실업률이 12개월 평균보다 높고(경기 둔화) SPY가 10개월 평균 아래일 때만 IEF, 그 외엔 SPY. 월 1회. 실업률은 발표 시차 1개월 반영",
+            dict(sma_months=10, ur_months=12),
+            [dict(sma_months=a, ur_months=b) for a, b in itertools.product([8, 10, 12], [9, 12, 15])],
+            lambda p: ns.growth_trend(c, macro["UNRATE"], **p)),
+        "신용+가격 추세": (
+            "회사채 금리차(Baa-10년물)가 1년 평균보다 높고 SPY가 200일 평균 아래일 때만 IEF, 그 외엔 SPY. 매일 판단",
+            dict(spread_window=252, sma_days=200),
+            [dict(spread_window=a, sma_days=b) for a, b in itertools.product([126, 252, 504], [150, 200, 250])],
+            lambda p: ns.credit_trend(c, macro["BAA10Y"], **p)),
+        "계절성 (5월엔 팔아라)": (
+            "11월~4월은 SPY, 5월~10월은 IEF",
+            dict(in_month=11, out_month=5),
+            [dict(in_month=a, out_month=b) for a, b in itertools.product([10, 11, 12], [4, 5, 6])],
+            lambda p: ns.halloween(c, **p)),
+        "주식·채권 위험균형": (
+            "SPY와 장기채(TLT)를 변동성 반비례로 섞음. 월 1회, 4분할",
+            dict(assets=("SPY", "TLT"), vol_window=63),
+            [dict(assets=a, vol_window=v) for a, v in itertools.product([("SPY", "TLT"), ("SPY", "IEF"), ("QQQ", "TLT")], [21, 63, 126])],
+            lambda p: ns.risk_parity(c, **p)),
+        "3배 주식+3배 채권 (HFEA)": (
+            "UPRO 55% + TMF 45% 고정 (2009년 전 TMF, 2010년 전 UPRO는 모의)",
+            dict(stock_share=0.55),
+            [dict(stock_share=x) for x in (0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7)],
+            lambda p: ns.leveraged_pair(c, **p)),
     }
 
 
@@ -113,12 +159,12 @@ def pct(x):
 
 
 def main():
-    c, o, irx, high, low, vix, canary = load_all()
+    c, o, irx, high, low, vix, canary, macro = load_all()
     spy = ac.fixed(c, o, {"SPY": 1.0})
-    fams = families(c, high, low, vix)
+    fams = families(c, high, low, vix, macro)
     vix_start = vix["^VIX3M"].first_valid_index()
 
-    out = ["# 새 전략 계열 탐색 (1차)\n",
+    out = ["# 새 전략 계열 탐색\n",
            f"데이터 {c.index[0].date()} ~ {c.index[-1].date()}. 신호는 종가, 체결은 다음 날 시가, 편도 비용 25bp. "
            "샤프는 단기국채 금리를 뺀 기준.\n",
            "판정 기준(결과를 보기 전에 고정): 세 구간(2006~07 / 2008~14 / 2015~) 모두 SPY보다 샤프가 높고 "
@@ -133,6 +179,7 @@ def main():
         bt = run_backtest(c, base_w, COST, o)
         r = bt.returns
         r10 = run_backtest(c, base_w, 10.0, o).returns
+        r0 = run_backtest(c, base_w, 0.0, o).returns
         returns[name] = r
         base_pass = passes(r, spy, irx)
         grid_pass = [all(passes(run_backtest(c, build(p), COST, o).returns, spy, irx)) for p in grid]
@@ -162,7 +209,8 @@ def main():
             lines.append(f"| {label} | {cells} |")
         cg25, _, _ = stats(ac.per(r, ("2006-01-01", None)), irx)
         cg10, _, _ = stats(ac.per(r10, ("2006-01-01", None)), irx)
-        lines.append(f"\n비용 25bp 대신 10bp면 2006~ 연수익 {pct(cg25)} → {pct(cg10)}.\n")
+        cg0, _, _ = stats(ac.per(r0, ("2006-01-01", None)), irx)
+        lines.append(f"\n2006~ 연수익: 비용 25bp {pct(cg25)} / 10bp {pct(cg10)} / 비용 없음 {pct(cg0)}.\n")
         detail += lines
 
     out += ["## 요약\n", pd.DataFrame(rows).to_markdown(index=False), "",
