@@ -80,3 +80,53 @@ def quotes(symbols: list[str], fetch=None) -> dict:
             data = {"quotes": {}, "as_of": None, "error": str(e)[:200]}
         _cache[key] = (time.monotonic(), data)
         return data
+
+
+# -- one symbol's price history for the chart window ---------------------------
+# range -> (Yahoo period, bar interval, seconds a fetch is reused)
+RANGES = {
+    "1D": ("1d", "5m", 30), "1W": ("5d", "30m", 120), "1M": ("1mo", "1d", 900),
+    "3M": ("3mo", "1d", 900), "1Y": ("1y", "1d", 1800), "5Y": ("5y", "1wk", 3600),
+}
+_hist: dict[tuple, tuple[float, dict]] = {}
+
+
+def _download_history(symbol: str, period: str, interval: str) -> pd.Series:
+    import yfinance as yf
+    raw = yf.download(symbol, period=period, interval=interval, auto_adjust=False, prepost=False,
+                      progress=False, threads=False)
+    if raw is None or raw.empty:
+        return pd.Series(dtype=float)
+    close = raw["Close"]
+    return close.iloc[:, 0] if isinstance(close, pd.DataFrame) else close
+
+
+def history(symbol: str, rng: str, fetch=None) -> dict:
+    """{symbol, range, intraday, points: [[time, close]], prev_close} for the chart.
+    Cached per (symbol, range). Never raises."""
+    syms = clean_symbols(symbol or "")
+    rng = rng if rng in RANGES else "1M"
+    if not syms:
+        return {"error": "종목 이름이 올바르지 않아요.", "points": []}
+    sym = syms[0]
+    period, interval, ttl = RANGES[rng]
+    key = (sym, rng)
+    with _lock:
+        hit = _hist.get(key)
+        if hit and time.monotonic() - hit[0] < ttl:
+            return hit[1]
+    try:
+        s = (fetch or _download_history)(sym, period, interval).dropna()
+        intraday = interval.endswith("m")
+        fmt = (lambda t: t.isoformat()) if intraday else (lambda t: str(t.date()))
+        data = {"symbol": sym, "range": rng, "intraday": intraday,
+                "points": [[fmt(t), round(float(v), 4)] for t, v in s.items()]}
+        if rng == "1D" and data["points"]:
+            day = (fetch or _download_history)(sym, "5d", "1d").dropna()
+            day = day[[str(t.date()) < data["points"][-1][0][:10] for t in day.index]]
+            data["prev_close"] = round(float(day.iloc[-1]), 4) if len(day) else None
+    except Exception as e:  # noqa: BLE001 - the window just says it couldn't load
+        return {"symbol": sym, "range": rng, "points": [], "error": str(e)[:200]}
+    with _lock:
+        _hist[key] = (time.monotonic(), data)
+    return data

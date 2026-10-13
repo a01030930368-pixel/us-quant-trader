@@ -44,3 +44,28 @@ def test_quotes_are_cached_and_never_raise(monkeypatch):
 
     bad = live.quotes(["SPY"], boom)
     assert bad["quotes"] == {} and "yahoo down" in bad["error"]
+
+
+def test_history_points_cache_and_errors():
+    import pandas as pd
+    from quant import live
+    live._hist.clear()
+    calls = []
+
+    def fetch(sym, period, interval):
+        calls.append((sym, period, interval))
+        if interval == "1d" and period == "5d":
+            return pd.Series([10.0, 11.0], index=pd.to_datetime(["2026-10-09", "2026-10-12"]))
+        idx = pd.date_range("2026-10-12 09:30", periods=3, freq="5min", tz="America/New_York")
+        return pd.Series([11.5, None, 12.0], index=idx)
+
+    d = live.history("qqq", "1D", fetch)
+    assert d["symbol"] == "QQQ" and d["intraday"] and len(d["points"]) == 2
+    assert d["points"][0][0].startswith("2026-10-12T09:30") and d["prev_close"] == 10.0
+    assert live.history("QQQ", "1D", fetch) is d and len(calls) == 2       # cached
+
+    daily = live.history("QQQ", "bogus", lambda *a: pd.Series([1.0, 2.0], index=pd.to_datetime(["2026-10-09", "2026-10-12"])))
+    assert daily["range"] == "1M" and daily["points"] == [["2026-10-09", 1.0], ["2026-10-12", 2.0]]
+    assert live.history("<x>", "1M")["points"] == []
+    bad = live.history("SPY", "1Y", lambda *a: (_ for _ in ()).throw(RuntimeError("down")))
+    assert bad["points"] == [] and "down" in bad["error"]
