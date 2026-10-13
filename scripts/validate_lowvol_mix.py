@@ -61,6 +61,20 @@ def main():
     out += ["## 연도별 (2006~)\n", ac.fmt(yr.reset_index()), "",
             "## 카나리아 70 + 저변동성 30의 가장 깊었던 낙폭 5개\n",
             ac.fmt(ac.dd_table(full["카나리아 70 + 저변동성 업종 30"])), ""]
+    # Rolling 3-year windows: how often the mix had the better Sharpe / shallower drawdown.
+    a, b = full["카나리아 100 + 저변동성 업종 0"], full["카나리아 70 + 저변동성 업종 30"]
+    starts = a.index[: len(a) - 756: 21]
+    better_sh = better_dd = better_ret = 0
+    for st in starts:
+        sa, sb = a.loc[st:].iloc[:756], b.loc[st:].iloc[:756]
+        ma, mb = ac.metrics(sa, irx), ac.metrics(sb, irx)
+        better_sh += mb["샤프"] > ma["샤프"]
+        better_dd += mb["최대낙폭"] > ma["최대낙폭"]
+        better_ret += mb["연수익(CAGR)"] > ma["연수익(CAGR)"]
+    n = len(starts)
+    out += ["## 3년씩 잘라 보면 (매달 시작점을 옮겨 가며)\n",
+            f"카나리아 70 + 저변동성 30이 카나리아 단독보다 샤프가 높았던 3년 구간 {better_sh}/{n} ({better_sh / n:.0%}), "
+            f"최대낙폭이 얕았던 구간 {better_dd}/{n} ({better_dd / n:.0%}), 연수익이 높았던 구간 {better_ret}/{n} ({better_ret / n:.0%}).\n"]
     Path("reports").mkdir(exist_ok=True)
     Path("reports/lowvol_mix.md").write_text("\n".join(out).replace("| nan ", "| -   "), encoding="utf-8")
     print("\n".join(out))
