@@ -552,6 +552,8 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 13.5V8.5M6.3 13.5V5M9.7 13.5V7M13 13.5V3"/></svg>월별 결산</button>
             <button type="button" class="ctl mini" id="cmp-more" hidden aria-label="카나리아와 4종 혼합, 50/50 비교 보기">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12.5 6 8l3 2.5 4.5-6"/><path d="M2.5 9.5 6 6.5l3 1 4.5-3" opacity=".5"/></svg>전략 비교</button>
+            <button type="button" class="ctl mini" id="report-more" hidden aria-label="성과 리포트 열기" title="SPY와 비교한 성과 리포트(quantstats)를 새 창으로 열어요.">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.8h5.5l2.5 2.5v9.9H4z"/><path d="M6.3 11.5V9.5M8 11.5V7.5M9.7 11.5V8.5"/></svg>리포트</button>
             <button type="button" class="ctl mini" id="perf-more" hidden aria-label="수익률 자세히 보기">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.5h4v4M13.5 2.5 8.5 7.5M6.5 13.5h-4v-4M2.5 13.5l5-5"/></svg>자세히</button>
           </div>
@@ -2122,6 +2124,33 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
       });
       back.querySelector('[data-act="no"]').focus();
     };
+
+    // ---- 성과 리포트 (quantstats, 에이전트가 만들어 새 창으로) ----
+    var btnReport = $("report-more");
+    btnReport.hidden = false;
+    btnReport.addEventListener("click", function () {
+      var back = document.createElement("div");
+      back.className = "modal-back";
+      back.innerHTML = '<div class="modal" role="dialog" aria-modal="true" aria-labelledby="rp-title">' +
+        '<h3 id="rp-title">어떤 리포트를 볼까요?</h3>' +
+        "<p>SPY와 비교한 수익률, 최대 낙폭, 샤프 지수, 월별 수익표를 한 페이지로 보여 줘요. 새 창으로 열려요.</p>" +
+        "<p><b>모의투자 기록</b>은 지금까지 실제로 매매한 결과예요. 기간이 짧으면 숫자가 크게 출렁여요.<br>" +
+        "<b>장기 백테스트</b>는 지금 전략을 2010년부터 돌려 본 결과예요. 가격을 받느라 처음엔 10~30초 걸려요.</p>" +
+        '<div class="acts"><button type="button" class="ctl" data-act="no">닫기</button>' +
+        '<button type="button" class="ctl" data-act="backtest">장기 백테스트</button>' +
+        '<button type="button" class="ctl primary" data-act="paper">모의투자 기록</button></div></div>';
+      document.body.appendChild(back);
+      var close = function () { back.remove(); document.removeEventListener("keydown", onKey); };
+      var onKey = function (e) { if (e.key === "Escape") close(); };
+      document.addEventListener("keydown", onKey);
+      back.addEventListener("click", function (e) {
+        var act = e.target.closest && e.target.closest("[data-act]");
+        var kind = act && act.getAttribute("data-act");
+        if (e.target === back || kind === "no") close();
+        else if (kind) { close(); window.open("/report?kind=" + kind, "_blank"); }
+      });
+      back.querySelector('[data-act="paper"]').focus();
+    });
 
     // ---- 실계좌 점검표 (읽기만 함) ----
     var btnCheck = $("btn-check");

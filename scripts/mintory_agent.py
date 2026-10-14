@@ -593,6 +593,10 @@ class Handler(BaseHTTPRequestHandler):
             from quant import live
             q = parse_qs(urlsplit(self.path).query)
             return self._json(200, live.history(q.get("symbol", [""])[0], q.get("range", ["1M"])[0]))
+        if path == "/report":  # quantstats performance report, opened in a new window
+            from quant import report
+            kind = parse_qs(urlsplit(self.path).query).get("kind", ["paper"])[0]
+            return self._send(200, report.build(kind, PAPER).encode("utf-8"), "text/html; charset=utf-8")
         self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
