@@ -1,0 +1,47 @@
+# 저변동성 업종 모의 장부를 매일 밤 갱신합니다. 주문은 내지 않는 가상 계좌입니다.
+# 장부는 paper-lowvol 브랜치의 paper_lowvol/ 폴더에 쌓이고, Mintory가 받아 카나리아와 70:30으로 섞어 비교합니다.
+name: lowvol-paper
+on:
+  schedule:
+    - cron: "40 22 * * 1-5"   # 미국장 마감 뒤 (한국시간 다음 날 07:40)
+  workflow_dispatch:
+  push:
+    branches: [claude/project-thread-jzo1hc]
+    paths:
+      - "scripts/lowvol_paper.py"
+      - "quant/new_strategies.py"
+      - ".github/workflows/lowvol-paper.yml"
+concurrency:
+  group: lowvol-paper
+  cancel-in-progress: false
+jobs:
+  ledger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: 장부 브랜치 열기
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          if git fetch --depth 1 origin paper-lowvol:paper-lowvol; then
+            git worktree add ledger_repo paper-lowvol
+          else
+            git worktree add --detach ledger_repo
+            cd ledger_repo && git checkout --orphan paper-lowvol && git rm -rfq . && git clean -fdq
+          fi
+      - name: 저변동성 업종 계산하고 장부에 이어 쓰기
+        run: python scripts/lowvol_paper.py --ledger ledger_repo/paper_lowvol
+      - name: 장부 저장
+        working-directory: ledger_repo
+        run: |
+          git add paper_lowvol
+          git diff --cached --quiet && exit 0
+          git commit -qm "저변동성 업종 모의 장부 $(date -u +%Y-%m-%d)"
+          git push origin paper-lowvol

@@ -140,6 +140,12 @@
 - `state.json`: `name`, `updated_at`, `base_date`, `base_equity`, `last_date`, `equity`, `return`, `max_drawdown`, `universe_size`, `cost_bps`, `insider_latest_filing`(반영된 마지막 내부자 매수 공시일), `note`, `sleeves`(칸마다 `label`, `weight`, `holdings`: `ticker`, `entry_date`, `entry_price`, `last_price`, `return`).
 - `universe.txt`: 처음 실행한 날의 S&P 1500 종목 목록(고정).
 
+## lowvol/ (선택, 저변동성 업종 가상 계좌)
+
+`stockblend/` 와 같은 방식입니다. GitHub `paper-lowvol` 브랜치의 `paper_lowvol/` 을 받아 `paper/lowvol/` 에 둡니다. 만드는 쪽은 `scripts/lowvol_paper.py` (GitHub Actions `lowvol-paper`).
+- `equity.jsonl`: 형식은 4종 혼합과 같고, `sleeves` 는 비어 있습니다.
+- `state.json`: `name`, `updated_at`, `base_date`, `base_equity`, `last_date`, `equity`, `return`, `max_drawdown`, `cost_bps`, `mix_share`(카나리아에 섞는 비중, 0.3), `note`, `holdings`(`ticker`, `name`, `weight`, `vol`: 최근 6개월 연환산 변동성).
+
 ## STOP (선택)
 
 `paper/STOP` 파일이 있으면 실행기는 주문을 내지 않습니다. 잔고와 그날 평가금액 기록은 계속 남깁니다. Mintory 화면의 일시정지 버튼이 이 파일을 만들고, 다시 시작 버튼이 지웁니다.

@@ -68,6 +68,16 @@ def load(data_dir: Path) -> dict:
             }
         except (OSError, json.JSONDecodeError):
             print("[경고] 4종 혼합 장부를 읽지 못해 전략 비교는 건너뜁니다.", file=sys.stderr)
+    # 저변동성 업종 모의 장부 (카나리아에 30% 섞는 후보, 같은 방식의 가상 계좌)
+    low_dir = data_dir / "lowvol"
+    if (low_dir / "state.json").exists():
+        try:
+            data["lowvol"] = {
+                "state": json.loads((low_dir / "state.json").read_text(encoding="utf-8-sig")),
+                "equity": read_jsonl(low_dir / "equity.jsonl"),
+            }
+        except (OSError, json.JSONDecodeError):
+            print("[경고] 저변동성 업종 장부를 읽지 못해 비교에서 뺍니다.", file=sys.stderr)
     # 자동 실행 도우미(mintory_agent)가 남기는 상태. 없거나 깨져 있으면 표시하지 않는다.
     agent_path = data_dir / "agent.json"
     if agent_path.exists():

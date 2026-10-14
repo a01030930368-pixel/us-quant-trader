@@ -97,3 +97,43 @@ def test_agent_fetches_the_ledger_every_two_hours():
     assert stockblend_due(now, None)
     assert not stockblend_due(now, (now - timedelta(minutes=90)).isoformat())
     assert stockblend_due(now, (now - timedelta(hours=2)).isoformat())
+
+
+def test_lowvol_ledger_rows():
+    import numpy as np
+    import pandas as pd
+
+    from quant.new_strategies import SECTORS
+    from scripts.lowvol_paper import extend, run_lowvol
+
+    rng = np.random.default_rng(0)
+    idx = pd.bdate_range("2023-01-02", "2026-10-13")
+    close = pd.DataFrame(100 * np.exp(np.cumsum(rng.normal(0, 0.01, (len(idx), len(SECTORS))), axis=0)),
+                         index=idx, columns=SECTORS)
+    out = run_lowvol(close, close)
+    assert out["ret"].index[0] >= pd.Timestamp("2024-01-02")
+    assert 1 <= len(out["holdings"]) and abs(sum(h["weight"] for h in out["holdings"]) - 1) < 1e-9
+    rows = extend([], out["ret"], out["sleeves"].reindex(out["ret"].index), pd.Timestamp("2026-10-13"))
+    assert rows[0] == {"date": "2026-10-09", "equity": 100000.0, "ret": 0.0, "sleeves": {}}
+    assert [r["date"] for r in rows[1:]] == ["2026-10-12", "2026-10-13"]
+
+
+def test_sync_lowvol_branch(tmp_path):
+    from quant import stockblend_sync
+
+    s = FakeSession({"state.json": b"{}", "equity.jsonl": b""})
+    branch, folder, _ = stockblend_sync.LEDGERS["저변동성 업종"]
+    assert stockblend_sync.sync(tmp_path, "tok", session=s, branch=branch, folder=folder, label="저변동성 업종") is None
+    assert all(p == {"ref": "paper-lowvol"} and "paper_lowvol/" in url for url, p, _ in s.calls)
+
+
+def test_build_loads_lowvol(tmp_path):
+    import json
+
+    from dashboard import build
+    (tmp_path / "state.json").write_text(json.dumps({"schema_version": 1}))
+    assert "lowvol" not in build.load(tmp_path)
+    (tmp_path / "lowvol").mkdir()
+    (tmp_path / "lowvol" / "state.json").write_text(json.dumps({"equity": 100000}))
+    (tmp_path / "lowvol" / "equity.jsonl").write_text('{"date": "2026-10-09", "equity": 100000}\n')
+    assert build.load(tmp_path)["lowvol"]["state"]["equity"] == 100000
