@@ -1,11 +1,9 @@
 # 백테스트 엔진 교차 검증: 우리 엔진과 bt 라이브러리 결과 비교.
-# Actions 탭 -> crosscheck -> Run workflow, 또는 이 브랜치에 스크립트를 올리면 자동 실행.
+# 수동 실행만 (Actions 사용 시간 절약): Actions 탭 -> crosscheck -> Run workflow.
+# 2026-10-14 결과(일치)는 results/crosscheck_bt.md.
 name: crosscheck
 on:
   workflow_dispatch:
-  push:
-    branches: ["claude/project-thread-0be16k"]
-    paths: ["scripts/crosscheck_bt.py", ".github/workflows/crosscheck.yml"]
 jobs:
   crosscheck:
     runs-on: ubuntu-latest
