@@ -66,6 +66,20 @@ class SimBroker:
                 "filled_qty": qty, "fill_price": ref_price, "fee": fee}
 
 
+# Kiwoom error codes (official spec, Kiwoom-Securities/Kiwoom-REST-API) whose fix
+# is on the user's side; a new token would not help, so these are not retried.
+ERROR_HINTS = {
+    "8010": "토큰을 받은 IP와 지금 IP가 달라요. 인터넷 연결(공유기, VPN)이 바뀌었는지 확인하세요.",
+    "8030": "실전용과 모의투자용 앱키가 섞였어요. .env의 키가 맞는 계좌용인지 확인하세요.",
+    "8031": "실전용과 모의투자용 토큰이 섞였어요. Mintory를 다시 켜 보세요.",
+    "8040": "단말기 인증 실패: 키움 홈페이지의 REST API 설정에서 이 PC의 IP가 등록돼 있는지 확인하세요.",
+    "8050": "지정단말기 인증 실패: 키움 홈페이지의 REST API 설정에서 이 PC의 IP가 등록돼 있는지 확인하세요.",
+    "8103": "토큰 또는 단말기 인증 실패: 키움 홈페이지의 REST API 설정(IP 등록, 앱키)을 확인하세요.",
+    "8104": "모의투자에서 지원하지 않는 기능이에요.",
+    "1903": "종목코드와 거래소 코드(ND/NY/NA)가 맞지 않아요.",
+}
+
+
 class KiwoomBroker:
     """Kiwoom REST API (US stocks). mock=True uses the paper-trading server.
 
@@ -136,6 +150,7 @@ class KiwoomBroker:
             if r.ok and str(data.get("return_code", "0")) == "0":
                 return data
             msg = str(data.get("return_msg", ""))
+            hint = ERROR_HINTS.get(str(data.get("return_code", "")).strip())
             # 429 / "초과": rate limit. "지연"/"재시도" (e.g. RC9002, mock server
             # busy) or "Timeover response" (RC20): Kiwoom asks to retry later.
             # None of these means the request ran.
@@ -143,13 +158,13 @@ class KiwoomBroker:
                 k in msg for k in ("초과", "지연", "재시도", "Timeover", "timeover"))
             # An expired or revoked token is refused before the request runs:
             # get a new one and send again.
-            if attempt < retries and (r.status_code == 401 or "토큰" in msg or "token" in msg.lower()):
+            if attempt < retries and not hint and (r.status_code == 401 or "토큰" in msg or "token" in msg.lower()):
                 self._token, self._token_exp = None, 0.0
                 continue
             if attempt < retries and (r.status_code >= 500 or busy):
                 time.sleep((10 if busy else 2) * (attempt + 1))
                 continue
-            raise RuntimeError(f"{api_id} 실패 (HTTP {r.status_code}): {data}")
+            raise RuntimeError(f"{api_id} 실패 (HTTP {r.status_code}): {data}" + (f" → {hint}" if hint else ""))
         raise AssertionError("unreachable")
 
     def exchange_of(self, ticker: str) -> str:
