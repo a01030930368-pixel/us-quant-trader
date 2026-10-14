@@ -427,3 +427,14 @@ def test_chart_endpoint(server, monkeypatch):
     assert code == 200 and json.loads(body) == {"points": []} and seen == [("TQQQ", "1Y")]
     call(url + "/api/chart?symbol=QQQ")
     assert seen[-1] == ("QQQ", "1M")
+
+
+def test_report_endpoint(server, monkeypatch):
+    from quant import report
+    seen = []
+    monkeypatch.setattr(report, "build", lambda kind, paper: seen.append(kind) or "<html>리포트</html>")
+    url, *_ = server
+    code, body = call(url + "/report?kind=backtest")
+    assert code == 200 and "리포트" in body and seen == ["backtest"]
+    call(url + "/report")
+    assert seen[-1] == "paper"
