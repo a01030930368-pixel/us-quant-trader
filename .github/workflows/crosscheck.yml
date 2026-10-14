@@ -1,0 +1,28 @@
+# 백테스트 엔진 교차 검증: 우리 엔진과 bt 라이브러리 결과 비교.
+# Actions 탭 -> crosscheck -> Run workflow, 또는 이 브랜치에 스크립트를 올리면 자동 실행.
+name: crosscheck
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/project-thread-0be16k"]
+    paths: ["scripts/crosscheck_bt.py", ".github/workflows/crosscheck.yml"]
+jobs:
+  crosscheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt bt
+      - run: python scripts/crosscheck_bt.py
+      - run: cat reports/crosscheck_bt.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Save the report to this branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          mkdir -p results && cp reports/crosscheck_bt.md results/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add results && git commit -m "bt cross-check report from run ${{ github.run_id }}" && git push

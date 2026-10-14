@@ -42,3 +42,18 @@ def test_next_rebalance_skips_good_friday():
     assert next_rebalance(pd.Timestamp("2026-04-02"), cfg) == {"signal_date": "2026-04-08",
                                                                "order_date": "2026-04-09",
                                                                "tranche": 2, "tranches": 4}
+
+
+def test_matches_pandas_market_calendars():
+    """Cross-check against pandas_market_calendars (installed in CI only)."""
+    import pytest
+    pmc = pytest.importorskip("pandas_market_calendars")
+    nyse = pmc.get_calendar("NYSE")
+    sched = nyse.schedule(start_date="2010-01-01", end_date="2035-12-31")
+    weekdays = pd.bdate_range("2010-01-01", "2035-12-31").date
+    theirs = {d for d in weekdays if d not in set(sched.index.date)}
+    ours = {d for y in range(2010, 2036) for d in mc.holidays(y)}
+    # One-off closures nobody can know ahead (Hurricane Sandy, presidential funerals).
+    special = {date(2012, 10, 29), date(2012, 10, 30), date(2018, 12, 5), date(2025, 1, 9)}
+    assert theirs - special == ours
+    assert set(nyse.early_closes(sched).index.date) == {d for y in range(2010, 2036) for d in mc.early_closes(y)}

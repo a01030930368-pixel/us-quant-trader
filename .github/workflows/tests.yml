@@ -12,4 +12,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
+      # 테스트에서만 쓰는 대조용 휴장일 달력 (앱에는 설치하지 않음)
+      - run: pip install pandas_market_calendars
       - run: pytest -q

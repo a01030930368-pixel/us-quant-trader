@@ -610,6 +610,25 @@ def test_kiwoom_gets_a_new_token_when_refused(monkeypatch):
     assert seen == ["Bearer T1", "Bearer T2"]
 
 
+def test_kiwoom_explains_user_side_errors_without_retrying(monkeypatch):
+    from quant.trader import brokers
+    b = brokers.KiwoomBroker("k", "s")
+    monkeypatch.setattr(b, "token", lambda: "T")
+    calls = []
+
+    class R:
+        status_code, ok, content = 200, True, b"x"
+
+        def json(self):
+            return {"return_code": 8050, "return_msg": "지정단말기 인증에 실패했습니다 (token)"}
+
+    monkeypatch.setattr(brokers.requests, "post", lambda *a, **k: calls.append(1) or R())
+    monkeypatch.setattr(brokers.time, "sleep", lambda s: None)
+    with pytest.raises(RuntimeError, match="IP가 등록"):
+        b.call("/x", "ust21160", {})
+    assert len(calls) == 1                     # a new token would not help
+
+
 # -- live-account rehearsal (never orders) --------------------------------------
 def test_read_only_broker_refuses_orders(tmp_path):
     from quant.trader.brokers import ReadOnlyBroker
