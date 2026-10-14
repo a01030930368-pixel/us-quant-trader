@@ -1,0 +1,34 @@
+{
+ "schema_version": 1,
+ "name": "저변동성 업종 (업종 ETF 3개)",
+ "updated_at": "2026-10-14T02:25:28+00:00",
+ "base_date": "2026-10-09",
+ "base_equity": 100000.0,
+ "last_date": "2026-10-13",
+ "equity": 100730.07,
+ "return": 0.007301,
+ "max_drawdown": -0.000332,
+ "cost_bps": 25.0,
+ "mix_share": 0.3,
+ "note": "가상 계좌입니다(주문 없음). 카나리아에 30% 섞는 후보라서 Mintory가 70:30 선도 함께 그립니다.",
+ "holdings": [
+  {
+   "ticker": "XLF",
+   "name": "금융",
+   "weight": 0.3333,
+   "vol": 0.1264
+  },
+  {
+   "ticker": "XLP",
+   "name": "필수소비재",
+   "weight": 0.3333,
+   "vol": 0.154
+  },
+  {
+   "ticker": "XLU",
+   "name": "유틸리티",
+   "weight": 0.3333,
+   "vol": 0.1629
+  }
+ ]
+}
