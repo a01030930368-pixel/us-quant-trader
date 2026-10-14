@@ -270,12 +270,16 @@ def stockblend_due(now: datetime, last: str | None) -> bool:
 
 
 def sync_stockblend() -> None:
-    """Download the four-sleeve blend's paper ledger into paper/stockblend (comparison only)."""
+    """Download the virtual paper ledgers (four-sleeve blend, low-volatility sectors)
+    into paper/stockblend and paper/lowvol (comparison only)."""
     from quant import notify, stockblend_sync
 
     env = notify.read_env()
-    err = stockblend_sync.sync(PAPER / "stockblend", env.get("GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN"),
-                               env.get("MINTORY_REPO", stockblend_sync.REPO))
+    token = env.get("GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    errs = [stockblend_sync.sync(PAPER / sub, token, env.get("MINTORY_REPO", stockblend_sync.REPO),
+                                 branch=branch, folder=folder, label=label)
+            for label, (branch, folder, sub) in stockblend_sync.LEDGERS.items()]
+    err = " / ".join(e for e in errs if e) or None
     state = read_state()
     if err and err != state.get("stockblend_error"):
         log(err)
@@ -704,7 +708,7 @@ def loop(restarted: bool = False) -> None:
             try:
                 sync_stockblend()
             except Exception as e:  # noqa: BLE001 - a comparison download must never stop trading
-                log(f"4종 혼합 장부 받기 실패: {e}")
+                log(f"가상 계좌 장부 받기 실패: {e}")
                 update_state(stockblend_at=now_iso())
             state = read_state()
         day = backup_due(now, state.get("backup_day"))
