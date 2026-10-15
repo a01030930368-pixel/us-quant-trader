@@ -575,6 +575,46 @@ def test_preview_on_order_day_shows_the_next_one(close):
     assert pv["order_date"] > str(day.date())
 
 
+def test_preview_across_month_end_keeps_month_end_tranche(close):
+    # 2026-10-15: the 10/22 preview showed half the account moving to IEF.
+    # The carried-forward signal day (10/21) was the last row, so it looked
+    # like a month end and the month-end tranche re-decided three weeks early.
+    from quant.trader.runner import preview_rebalance, staggered_targets
+    idx = pd.bdate_range("2015-01-01", "2026-10-14")
+    px = pd.DataFrame(100 * np.cumprod(1 + np.random.default_rng(5).normal(0.0004, 0.01, (len(idx), len(DATA_TICKERS))), axis=0),
+                      index=idx, columns=DATA_TICKERS)
+    step = np.where(idx <= "2026-09-30", 1.001, 0.985)  # EEM rises, then slides in October
+    px["EEM"] = 100 * np.cumprod(step)
+    cfg = TraderConfig(canary=("EEM",), tranches=4)
+    today = pd.Timestamp("2026-10-16")
+    pv = preview_rebalance(px, today, cfg, {}, 10_000.0, {})
+    assert (pv["signal_date"], pv["order_date"]) == ("2026-10-21", "2026-10-22")
+    days = pd.bdate_range("2026-10-15", "2026-10-21")
+    flat = pd.concat([px, pd.DataFrame([px.iloc[-1].values] * len(days), index=days, columns=px.columns)])
+    rows, _ = staggered_targets(flat, pd.Timestamp("2026-10-22"), cfg)
+    want = {}
+    for t in rows:
+        want[t["symbol"]] = want.get(t["symbol"], 0.0) + t["weight"]
+    assert pv["weights"] == pytest.approx(want, abs=1e-4)
+    assert pv["weights"].get("IEF", 0) < 0.99  # the 9/30 tranche is still invested
+
+
+def test_check_run_before_the_order_run_shows_todays_orders(tmp_path, close):
+    # A refresh in the KST morning of an order day shows tonight's orders,
+    # the order run itself shows the next one.
+    from quant.trader.runner import next_rebalance
+    r = canary_runner(tmp_path)
+    px = canary_close(close)
+    day = pd.Timestamp(next_rebalance(pd.Timestamp("2026-09-28"), r.cfg)["order_date"])
+    morning = datetime(day.year, day.month, day.day, 3, tzinfo=timezone.utc)  # 12:00 KST
+    check = r.run(close=px.loc[:day - pd.offsets.BDay(1)], now=morning, execute=False)
+    assert check["preview"]["order_date"] == str(day.date())
+    done = r.run(close=px.loc[:day - pd.offsets.BDay(1)], now=morning, execute=True)
+    assert done["preview"]["order_date"] > str(day.date())
+    again = r.run(close=px.loc[:day - pd.offsets.BDay(1)], now=morning, execute=False)
+    assert again["preview"]["order_date"] > str(day.date())
+
+
 def test_runner_writes_preview(tmp_path, close):
     r = make_runner(tmp_path)
     st = r.run(close=close, now=datetime(2026, 10, 8, 15, tzinfo=timezone.utc))

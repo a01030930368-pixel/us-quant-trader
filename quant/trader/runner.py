@@ -306,19 +306,28 @@ def next_rebalance(today: pd.Timestamp, cfg: TraderConfig | None = None) -> dict
 
 
 def preview_rebalance(close: pd.DataFrame, today: pd.Timestamp, cfg: TraderConfig,
-                      positions: dict[str, dict], cash: float, prices: dict[str, float]) -> dict:
-    """The next rebalance after today, if prices stayed where they are now:
-    the target weights and the orders it would place. Unfinished sessions are
-    dropped and the last close is carried forward to the signal day."""
+                      positions: dict[str, dict], cash: float, prices: dict[str, float],
+                      ran_today: bool = True) -> dict:
+    """The next rebalance, if prices stayed where they are now: the target
+    weights and the orders it would place. Unfinished sessions are dropped and
+    the last close is carried forward to the signal day.
+
+    ran_today: today's order run already happened, so show the one after it.
+    A check run earlier in the day (a refresh at noon KST) shows tonight's."""
     nxt = next_rebalance(today, cfg)
-    if nxt["order_date"] <= str(today.date()):  # today's trade is the run itself; show the one after
+    if ran_today and nxt["order_date"] <= str(today.date()):
         nxt = next_rebalance(today + mc.bday(), cfg)
     sig = pd.Timestamp(nxt["signal_date"])
     px = close[close.index < today.normalize()]
     if sig > px.index[-1]:
         future = pd.date_range(px.index[-1] + mc.bday(), sig, freq=mc.bday())
         px = pd.concat([px, pd.DataFrame([px.iloc[-1].values] * len(future), index=future, columns=px.columns)])
-    w = model_weights(px.loc[:sig], cfg).loc[sig] / (1 - cfg.cash_buffer)
+    # Same rows the order day will see. Without the placeholder the carried-
+    # forward signal day would look like a month end, and the month-end
+    # tranche would re-decide early (2026-10-15: half the account shown
+    # moving to IEF on 10/22 instead of one quarter).
+    px = _completed(px.loc[:sig], sig + mc.bday())
+    w = model_weights(px, cfg).loc[sig] / (1 - cfg.cash_buffer)
     weights = {t: round(float(v), 4) for t, v in w.items() if v > 1e-9}
     orders = plan_orders(weights, {**{t: float(px[t].iloc[-1]) for t in px.columns}, **prices},
                          positions, cash, cfg)
@@ -886,10 +895,13 @@ class Runner:
             meta["seen"] = {"time": now.isoformat(timespec="seconds"), "cash": round(cash, 2),
                             "qty": {s: p["qty"] for s, p in positions.items() if p["qty"]}}
         withdraw = self._withdraw_ready(cash, paused)
+        if execute:
+            meta["last_run"] = str(today.date())
         self._write_atomic("meta.json", meta)
         preview = None
         try:
-            preview = preview_rebalance(close, today, self.cfg, positions, cash, prices)
+            preview = preview_rebalance(close, today, self.cfg, positions, cash, prices,
+                                        ran_today=meta.get("last_run") == str(today.date()))
         except Exception as e:  # noqa: BLE001 - a preview must never stop a run
             alerts.append({"level": "info", "message": f"다음 리밸런싱 미리보기를 계산하지 못했습니다: {str(e)[:120]}"})
         backtest = None
