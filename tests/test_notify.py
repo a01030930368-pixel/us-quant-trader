@@ -24,11 +24,11 @@ def test_quiet_day_respects_daily_switch():
 
 
 def test_order_day_without_changes_says_so():
-    st = {**STATE, "updated_at": "2026-10-15T23:45:10+09:00",
-          "next_rebalance": {"signal_date": "2026-10-14", "order_date": "2026-10-15", "tranche": 3, "tranches": 4}}
+    st = {**STATE, "next_rebalance": {"order_date": "2026-10-22", "tranche": 4, "tranches": 4},
+          "rebalance_today": {"signal_date": "2026-10-14", "order_date": "2026-10-15", "tranche": 3, "tranches": 4}}
     text = notify.run_message("auto", "ok", st, [], EQ, daily=False)
     assert "3번 덩어리 리밸런싱 날" in text and "리밸런싱 날이 아니라" not in text
-    st["next_rebalance"] = {**st["next_rebalance"], "order_date": "2026-10-22"}
+    st["rebalance_today"] = None
     assert notify.run_message("auto", "ok", st, [], EQ, daily=False) is None
 
 

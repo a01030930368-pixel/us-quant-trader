@@ -615,6 +615,23 @@ def test_check_run_before_the_order_run_shows_todays_orders(tmp_path, close):
     assert again["preview"]["order_date"] > str(day.date())
 
 
+def test_state_moves_to_next_order_day_after_the_order_run(tmp_path, close):
+    # 2026-10-15: after the 23:45 run the dashboard still pointed at 10/15 and
+    # showed "확인 필요" once the clock passed midnight.
+    from quant.trader.runner import next_rebalance
+    r = canary_runner(tmp_path)
+    px = canary_close(close)
+    day = pd.Timestamp(next_rebalance(pd.Timestamp("2026-09-28"), r.cfg)["order_date"])
+    evening = datetime(day.year, day.month, day.day, 14, 45, tzinfo=timezone.utc)  # 23:45 KST
+    data = px.loc[:day - pd.offsets.BDay(1)]
+    check = r.run(close=data, now=evening, execute=False)
+    assert check["next_rebalance"]["order_date"] == str(day.date())
+    assert check["rebalance_today"]["order_date"] == str(day.date())
+    done = r.run(close=data, now=evening, execute=True)
+    assert done["next_rebalance"]["order_date"] > str(day.date())
+    assert done["rebalance_today"]["tranche"] == check["rebalance_today"]["tranche"]
+
+
 def test_runner_writes_preview(tmp_path, close):
     r = make_runner(tmp_path)
     st = r.run(close=close, now=datetime(2026, 10, 8, 15, tzinfo=timezone.utc))

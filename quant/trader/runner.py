@@ -933,6 +933,17 @@ class Runner:
             return []
         return [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
 
+    def _rebalance_days(self, now, meta) -> dict:
+        """The next order day not yet run, and whether today was one. Once
+        tonight's order run is done, today's date is past (2026-10-15: the
+        dashboard showed "확인 필요" after midnight for the finished 10/15 run)."""
+        day = pd.Timestamp(now.date())
+        nxt = next_rebalance(day, self.cfg)
+        today = nxt if nxt["order_date"] == str(day.date()) else None
+        if today and meta.get("last_run") == str(session_cutoff(now).date()):
+            nxt = next_rebalance(day + mc.bday(), self.cfg)
+        return {"next_rebalance": nxt, "rebalance_today": today}
+
     def _state(self, now, meta, alerts, positions=None, cash=None, prices=None,
                targets=None, scores=None, sig=None, canary=None, backtest=None, preview=None,
                parts=None, withdraw=None) -> dict:
@@ -972,7 +983,7 @@ class Runner:
                           for s, p in positions.items()],
             "targets": targets or [],
             "last_rebalance": meta.get("last_rebalance"),
-            "next_rebalance": next_rebalance(pd.Timestamp(now.date()), self.cfg),
+            **self._rebalance_days(now, meta),
             "signal": {"as_of": str(sig.date()) if sig is not None else None,
                        "lookback_days": max(self.cfg.lookbacks or (self.cfg.lookback,)),
                        "lookbacks": list(self.cfg.lookbacks or (self.cfg.lookback,)),
