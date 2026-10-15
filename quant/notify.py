@@ -116,7 +116,13 @@ def run_message(job: str, result: str, state: dict, new_trades: list[dict],
         if initial:
             summary.append(f"📊 누적 {_pct(g[-1] - 1)}")
 
-    if not (new_trades or problems or paused or (daily and summary) or job == "run"):
+    # A tranche's order day can pass without orders when its new target equals
+    # what the account already holds (2026-10-15: the old text said it wasn't
+    # a rebalance day at all).
+    nxt = state.get("next_rebalance") or {}
+    rebalance_day = job in ("auto", "run") and not failed and bool(nxt.get("order_date")) \
+        and nxt["order_date"] == str(state.get("updated_at") or "")[:10]
+    if not (new_trades or problems or paused or (daily and summary) or job == "run" or rebalance_day):
         return None
     blocks = [f"{TITLES.get(job, job)} · Mintory"]
     if paused:
@@ -128,7 +134,12 @@ def run_message(job: str, result: str, state: dict, new_trades: list[dict],
     if summary:
         blocks.append("\n".join(summary))
     if not (new_trades or problems or paused) and job in ("auto", "run"):
-        blocks.append("😴 오늘은 리밸런싱 날이 아니라 주문 없이 기록만 했어요.")
+        if rebalance_day:
+            part = f"{nxt['tranche']}번 덩어리 " if nxt.get("tranche") else ""
+            blocks.append(f"✅ 오늘은 {part}리밸런싱 날이에요. 새로 정한 비중이 지금 보유와 같아서 "
+                          "바꿀 종목이 없었어요.")
+        else:
+            blocks.append("😴 오늘은 리밸런싱 날이 아니라 주문 없이 기록만 했어요.")
     return "\n\n".join(blocks)
 
 

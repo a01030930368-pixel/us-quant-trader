@@ -23,6 +23,15 @@ def test_quiet_day_respects_daily_switch():
     assert "주문 없이 기록만" in notify.run_message("auto", "ok", STATE, [], EQ, daily=True)
 
 
+def test_order_day_without_changes_says_so():
+    st = {**STATE, "updated_at": "2026-10-15T23:45:10+09:00",
+          "next_rebalance": {"signal_date": "2026-10-14", "order_date": "2026-10-15", "tranche": 3, "tranches": 4}}
+    text = notify.run_message("auto", "ok", st, [], EQ, daily=False)
+    assert "3번 덩어리 리밸런싱 날" in text and "리밸런싱 날이 아니라" not in text
+    st["next_rebalance"] = {**st["next_rebalance"], "order_date": "2026-10-22"}
+    assert notify.run_message("auto", "ok", st, [], EQ, daily=False) is None
+
+
 def test_problems_and_pause_always_notify():
     st = {"alerts": [{"level": "error", "message": "계좌 조회에 실패해 매매하지 않았습니다"}]}
     text = notify.run_message("auto", "error (exit 1)", st, [], [], daily=False)
