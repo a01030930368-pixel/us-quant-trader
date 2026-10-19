@@ -1,12 +1,12 @@
 {
  "schema_version": 1,
  "name": "4종 혼합 (S&P 1500, 25%씩)",
- "updated_at": "2026-10-16T22:55:26+00:00",
+ "updated_at": "2026-10-19T22:56:13+00:00",
  "base_date": "2026-10-09",
  "base_equity": 100000.0,
- "last_date": "2026-10-16",
- "equity": 97360.11,
- "return": -0.026399,
+ "last_date": "2026-10-19",
+ "equity": 97376.96,
+ "return": -0.02623,
  "max_drawdown": -0.026399,
  "universe_size": 1502,
  "cost_bps": 25.0,
@@ -22,141 +22,141 @@
      "ticker": "ELV",
      "entry_date": "2025-02-03",
      "entry_price": 382.9195,
-     "last_price": 428.26,
-     "return": 0.1184
+     "last_price": 430.23,
+     "return": 0.1236
     },
     {
      "ticker": "LZ",
      "entry_date": "2025-02-03",
      "entry_price": 8.78,
-     "last_price": 6.06,
-     "return": -0.3098
+     "last_price": 6.3,
+     "return": -0.2825
     },
     {
      "ticker": "UNH",
      "entry_date": "2025-02-03",
      "entry_price": 518.7176,
-     "last_price": 401.43,
-     "return": -0.2261
+     "last_price": 406.88,
+     "return": -0.2156
     },
     {
      "ticker": "CHWY",
      "entry_date": "2025-02-03",
      "entry_price": 37.9,
-     "last_price": 20.97,
-     "return": -0.4467
+     "last_price": 20.53,
+     "return": -0.4583
     },
     {
      "ticker": "DPZ",
      "entry_date": "2025-02-03",
      "entry_price": 430.6934,
-     "last_price": 308.64,
-     "return": -0.2834
+     "last_price": 305.42,
+     "return": -0.2909
     },
     {
      "ticker": "BJRI",
      "entry_date": "2025-02-03",
      "entry_price": 35.74,
-     "last_price": 59.38,
-     "return": 0.6614
+     "last_price": 58.85,
+     "return": 0.6466
     },
     {
      "ticker": "VRSN",
      "entry_date": "2025-02-03",
      "entry_price": 208.7413,
-     "last_price": 302.335,
-     "return": 0.4484
+     "last_price": 306.48,
+     "return": 0.4682
     },
     {
      "ticker": "RNG",
      "entry_date": "2025-02-03",
      "entry_price": 33.5301,
-     "last_price": 75.44,
-     "return": 1.2499
+     "last_price": 79.19,
+     "return": 1.3618
     },
     {
      "ticker": "BAH",
      "entry_date": "2025-02-03",
      "entry_price": 123.7348,
-     "last_price": 74.26,
-     "return": -0.3998
+     "last_price": 74.06,
+     "return": -0.4015
     },
     {
      "ticker": "NVDA",
      "entry_date": "2025-02-03",
      "entry_price": 114.4508,
-     "last_price": 214.13,
-     "return": 0.8709
+     "last_price": 217.09,
+     "return": 0.8968
     },
     {
      "ticker": "LULU",
      "entry_date": "2025-02-03",
      "entry_price": 404.5,
-     "last_price": 97.1,
-     "return": -0.76
+     "last_price": 97.76,
+     "return": -0.7583
     },
     {
      "ticker": "YETI",
      "entry_date": "2025-02-03",
      "entry_price": 35.82,
-     "last_price": 43.07,
-     "return": 0.2024
+     "last_price": 42.12,
+     "return": 0.1759
     },
     {
      "ticker": "ETSY",
      "entry_date": "2025-02-03",
      "entry_price": 57.0,
-     "last_price": 85.14,
-     "return": 0.4937
+     "last_price": 85.26,
+     "return": 0.4958
     },
     {
      "ticker": "INSP",
      "entry_date": "2025-03-03",
      "entry_price": 185.6,
-     "last_price": 68.79,
-     "return": -0.6294
+     "last_price": 70.15,
+     "return": -0.622
     },
     {
      "ticker": "SFM",
      "entry_date": "2025-03-03",
      "entry_price": 148.47,
-     "last_price": 65.2,
-     "return": -0.5609
+     "last_price": 64.26,
+     "return": -0.5672
     },
     {
      "ticker": "PEGA",
      "entry_date": "2025-06-02",
      "entry_price": 48.4117,
-     "last_price": 34.54,
-     "return": -0.2865
+     "last_price": 35.04,
+     "return": -0.2762
     },
     {
      "ticker": "MANH",
      "entry_date": "2025-07-01",
      "entry_price": 196.29,
-     "last_price": 222.17,
-     "return": 0.1318
+     "last_price": 225.43,
+     "return": 0.1485
     },
     {
      "ticker": "TPR",
      "entry_date": "2025-09-02",
      "entry_price": 98.5128,
-     "last_price": 120.18,
-     "return": 0.2199
+     "last_price": 117.71,
+     "return": 0.1949
     },
     {
      "ticker": "CARG",
      "entry_date": "2026-09-01",
      "entry_price": 35.2,
-     "last_price": 30.28,
-     "return": -0.1398
+     "last_price": 31.02,
+     "return": -0.1188
     },
     {
      "ticker": "INDV",
      "entry_date": "2026-10-01",
      "entry_price": 35.85,
-     "last_price": 32.45,
-     "return": -0.0948
+     "last_price": 33.87,
+     "return": -0.0552
     }
    ]
   },
@@ -169,71 +169,71 @@
      "ticker": "HON",
      "entry_date": "2026-07-27",
      "entry_price": 243.7686,
-     "last_price": 211.41,
-     "return": -0.1327
+     "last_price": 209.98,
+     "return": -0.1386
     },
     {
      "ticker": "GOOGL",
      "entry_date": "2026-07-27",
      "entry_price": 324.8312,
-     "last_price": 340.59,
-     "return": 0.0485
+     "last_price": 344.18,
+     "return": 0.0596
     },
     {
      "ticker": "DRI",
      "entry_date": "2026-07-28",
      "entry_price": 205.8236,
-     "last_price": 216.35,
-     "return": 0.0511
+     "last_price": 216.24,
+     "return": 0.0506
     },
     {
      "ticker": "PECO",
      "entry_date": "2026-07-28",
      "entry_price": 43.3795,
-     "last_price": 38.21,
-     "return": -0.1192
+     "last_price": 37.79,
+     "return": -0.1289
     },
     {
      "ticker": "HCSG",
      "entry_date": "2026-07-28",
      "entry_price": 23.22,
-     "last_price": 21.13,
-     "return": -0.09
+     "last_price": 21.11,
+     "return": -0.0909
     },
     {
      "ticker": "ZION",
      "entry_date": "2026-08-10",
      "entry_price": 69.5825,
-     "last_price": 63.37,
-     "return": -0.0893
+     "last_price": 63.14,
+     "return": -0.0926
     },
     {
      "ticker": "TILE",
      "entry_date": "2026-08-13",
      "entry_price": 38.738,
-     "last_price": 36.23,
-     "return": -0.0647
+     "last_price": 35.44,
+     "return": -0.0851
     },
     {
      "ticker": "KMT",
      "entry_date": "2026-08-14",
      "entry_price": 30.32,
-     "last_price": 30.79,
-     "return": 0.0155
+     "last_price": 30.62,
+     "return": 0.0099
     },
     {
      "ticker": "CRM",
      "entry_date": "2026-08-31",
      "entry_price": 253.9432,
-     "last_price": 240.7,
-     "return": -0.0522
+     "last_price": 242.45,
+     "return": -0.0453
     },
     {
      "ticker": "BURL",
      "entry_date": "2026-08-31",
      "entry_price": 270.5,
-     "last_price": 262.66,
-     "return": -0.029
+     "last_price": 262.74,
+     "return": -0.0287
     }
    ]
   },
@@ -246,71 +246,71 @@
      "ticker": "JEF",
      "entry_date": "2026-06-01",
      "entry_price": 51.6883,
-     "last_price": 44.8,
-     "return": -0.1333
+     "last_price": 43.6,
+     "return": -0.1565
     },
     {
      "ticker": "AAT",
      "entry_date": "2026-07-01",
      "entry_price": 24.1183,
-     "last_price": 21.28,
-     "return": -0.1177
+     "last_price": 20.62,
+     "return": -0.145
     },
     {
      "ticker": "AMR",
      "entry_date": "2026-09-01",
      "entry_price": 235.72,
-     "last_price": 166.73,
-     "return": -0.2927
+     "last_price": 160.09,
+     "return": -0.3208
     },
     {
      "ticker": "INTC",
      "entry_date": "2026-09-01",
      "entry_price": 86.84,
-     "last_price": 89.85,
-     "return": 0.0347
+     "last_price": 92.03,
+     "return": 0.0598
     },
     {
      "ticker": "BSX",
      "entry_date": "2026-09-01",
      "entry_price": 49.12,
-     "last_price": 44.39,
-     "return": -0.0963
+     "last_price": 45.05,
+     "return": -0.0829
     },
     {
      "ticker": "APTV",
      "entry_date": "2026-09-01",
      "entry_price": 44.68,
-     "last_price": 44.86,
-     "return": 0.004
+     "last_price": 44.48,
+     "return": -0.0045
     },
     {
      "ticker": "GME",
      "entry_date": "2026-10-01",
      "entry_price": 24.41,
-     "last_price": 26.81,
-     "return": 0.0983
+     "last_price": 26.44,
+     "return": 0.0832
     },
     {
      "ticker": "UBER",
      "entry_date": "2026-10-01",
      "entry_price": 68.54,
-     "last_price": 70.35,
-     "return": 0.0264
+     "last_price": 69.96,
+     "return": 0.0207
     },
     {
      "ticker": "FOX",
      "entry_date": "2026-10-01",
      "entry_price": 56.36,
-     "last_price": 57.22,
-     "return": 0.0153
+     "last_price": 58.33,
+     "return": 0.035
     },
     {
      "ticker": "AON",
      "entry_date": "2026-10-01",
      "entry_price": 277.48,
-     "last_price": 292.55,
-     "return": 0.0543
+     "last_price": 289.74,
+     "return": 0.0442
     }
    ]
   },
@@ -323,8 +323,29 @@
      "ticker": "MRNA",
      "entry_date": "2026-08-31",
      "entry_price": 134.1,
-     "last_price": 218.01,
-     "return": 0.6257
+     "last_price": 226.89,
+     "return": 0.6919
+    },
+    {
+     "ticker": "OKTA",
+     "entry_date": "2026-10-19",
+     "entry_price": 191.0,
+     "last_price": 189.93,
+     "return": -0.0056
+    },
+    {
+     "ticker": "PENG",
+     "entry_date": "2026-10-19",
+     "entry_price": 60.5,
+     "last_price": 56.54,
+     "return": -0.0655
+    },
+    {
+     "ticker": "DDOG",
+     "entry_date": "2026-10-19",
+     "entry_price": 257.715,
+     "last_price": 260.36,
+     "return": 0.0103
     }
    ]
   }
