@@ -941,8 +941,29 @@ class Runner:
                     return ok
 
                 unanswered = []  # (order, last result): Kiwoom never replied
+                # A refused sell leaves its money out (2026-10-23: UPRO's sell hit
+                # Kiwoom's rate limit, then the IEF buy failed on cash). Buys then
+                # only spend the cash plus what the accepted sells bring in.
+                money, short = cash - reserve, False
                 for o in orders:
+                    if o["side"] == "buy" and short:
+                        fit = math.floor(max(money, 0.0) / (o["ref_price"] * 1.02))
+                        if fit < o["qty"]:
+                            alerts.append({"level": "warn", "message":
+                                           f"{o['symbol']} 매수를 {o['qty']}주에서 {max(fit, 0)}주로 줄였어요 "
+                                           "(매도 일부가 안 돼 현금이 모자라요). 다음 실행 때 나머지를 맞춰요."})
+                            all_ok = False
+                            if fit <= 0:
+                                continue
+                            o = {**o, "qty": fit, "value": fit * o["ref_price"]}
                     res = self.broker.place_order(o["symbol"], o["side"], o["qty"], o["ref_price"])
+                    if o["side"] == "sell":
+                        if res.get("ok"):
+                            money += o["value"]
+                        else:
+                            short = True
+                    else:
+                        money -= o["value"]
                     if self._no_reply(res):
                         unanswered.append((o, res))
                     else:

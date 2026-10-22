@@ -107,7 +107,7 @@ class FakeKiwoom(KiwoomBroker):
         super().__init__("k", "s", mock=True, exchanges={"SPY": "NY"})
         self.responses, self.sent = responses, []
 
-    def call(self, path, api_id, body, retries=2):
+    def call(self, path, api_id, body, retries=2, busy_only=False):
         self.sent.append((path, api_id, body))
         res = self.responses[api_id]
         if isinstance(res, Exception):
@@ -211,6 +211,30 @@ def test_kiwoom_retries_when_server_busy(monkeypatch):
     k = KiwoomBroker("k", "s")
     k._token, k._token_exp = "t", 1e12
     assert k.positions() == {} and not replies
+
+
+def test_kiwoom_resends_order_refused_by_rate_limit(monkeypatch):
+    # 2026-10-23: a UPRO sell got HTTP 429 "허용된 요청 개수를 초과하였습니다".
+    import quant.trader.brokers as b
+
+    class Resp:
+        def __init__(self, status, body):
+            self.status_code, self.ok, self.content, self.body = status, status < 400, b"x", body
+
+        def json(self):
+            return self.body
+
+    replies = [Resp(429, {"return_code": 5, "return_msg": "허용된 요청 개수를 초과하였습니다[1700]"}),
+               Resp(200, {"return_code": 0, "ord_no": "1"})]
+    monkeypatch.setattr(b.requests, "post", lambda *a, **k: replies.pop(0))
+    monkeypatch.setattr(b.time, "sleep", lambda s: None)
+    k = KiwoomBroker("k", "s")
+    k._token, k._token_exp = "t", 1e12
+    assert k.place_order("UPRO", "sell", 42, 150.0)["ok"] and not replies
+    # a "timeover" reply might have been placed: not resent
+    replies[:] = [Resp(200, {"return_code": 20, "return_msg": "[2000](1:Timeover response)"}),
+                  Resp(200, {"return_code": 0, "ord_no": "2"})]
+    assert not k.place_order("UPRO", "sell", 42, 150.0)["ok"] and len(replies) == 1
 
 
 def test_kiwoom_retries_read_timeout_but_not_orders(monkeypatch):
