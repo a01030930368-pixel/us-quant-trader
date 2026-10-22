@@ -127,7 +127,10 @@ class KiwoomBroker:
     MIN_GAP = 1.0  # seconds between requests; Kiwoom rejects bursts
     LIMIT_SLIP = 0.015  # marketable-limit buffer; the runner keeps 2% cash
 
-    def call(self, path: str, api_id: str, body: dict, retries: int = 3) -> dict:
+    def call(self, path: str, api_id: str, body: dict, retries: int = 3,
+             busy_only: bool = False) -> dict:
+        """busy_only: retry only Kiwoom's rate-limit refusal, which never
+        runs the request; used for orders."""
         for attempt in range(retries + 1):
             wait = self._last_call + self.MIN_GAP - time.time()
             if wait > 0:
@@ -142,7 +145,7 @@ class KiwoomBroker:
             except (requests.Timeout, requests.ConnectionError) as e:
                 # The mock server sometimes stalls. Orders pass retries=0, so an
                 # order that may have gone through is never sent twice.
-                if attempt < retries:
+                if attempt < retries and not busy_only:
                     time.sleep(10 * (attempt + 1))
                     continue
                 raise RuntimeError(f"{api_id} 응답 없음 (키움 서버): {e}") from e
@@ -158,10 +161,13 @@ class KiwoomBroker:
                 k in msg for k in ("초과", "지연", "재시도", "Timeover", "timeover"))
             # An expired or revoked token is refused before the request runs:
             # get a new one and send again.
-            if attempt < retries and not hint and (r.status_code == 401 or "토큰" in msg or "token" in msg.lower()):
+            if attempt < retries and not hint and not busy_only and (r.status_code == 401 or "토큰" in msg or "token" in msg.lower()):
                 self._token, self._token_exp = None, 0.0
                 continue
-            if attempt < retries and (r.status_code >= 500 or busy):
+            # For orders only the rate limit counts: a "timeover" reply might
+            # still have been placed.
+            limited = r.status_code == 429 or "초과" in msg
+            if attempt < retries and (limited if busy_only else (busy or r.status_code >= 500)):
                 time.sleep((10 if busy else 2) * (attempt + 1))
                 continue
             raise RuntimeError(f"{api_id} 실패 (HTTP {r.status_code}): {data}" + (f" → {hint}" if hint else ""))
@@ -227,7 +233,9 @@ class KiwoomBroker:
             body["stop_pric"] = ""
         api_id = "ust20000" if side == "buy" else "ust20001"
         try:
-            data = self.call("/api/us/ordr", api_id, body, retries=0)
+            # Rate-limit refusals (HTTP 429, 2026-10-23 UPRO sell) never ran,
+            # so those alone are sent again; a stalled reply is never resent here.
+            data = self.call("/api/us/ordr", api_id, body, retries=2, busy_only=True)
         except (RuntimeError, requests.RequestException, ValueError) as e:
             msg = str(e)[:300]
             if "응답 없음" in msg:
