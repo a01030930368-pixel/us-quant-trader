@@ -632,6 +632,24 @@ def test_state_moves_to_next_order_day_after_the_order_run(tmp_path, close):
     assert done["rebalance_today"]["tranche"] == check["rebalance_today"]["tranche"]
 
 
+def test_order_run_waits_for_yesterdays_close(tmp_path, close):
+    # 2026-10-22: Yahoo had closes only up to 10/20 at the 23:45 run, so the
+    # 10/21 tranche decision was skipped and the order day passed silently.
+    from quant.trader.runner import next_rebalance
+    r = canary_runner(tmp_path)
+    px = canary_close(close)
+    day = pd.Timestamp(next_rebalance(pd.Timestamp("2026-09-28"), r.cfg)["order_date"])
+    evening = datetime(day.year, day.month, day.day, 14, 45, tzinfo=timezone.utc)  # 23:45 KST
+    late = r.run(close=px.loc[:day - pd.offsets.BDay(2)], now=evening)
+    assert "가격 데이터가" in errors(late)
+    assert late["next_rebalance"]["order_date"] == str(day.date())
+    assert not trades(r)
+    ok = r.run(close=px.loc[:day - pd.offsets.BDay(1)], now=evening)
+    assert "가격 데이터가" not in errors(ok)
+    assert trades(r)
+    assert ok["next_rebalance"]["order_date"] > str(day.date())
+
+
 def test_runner_writes_preview(tmp_path, close):
     r = make_runner(tmp_path)
     st = r.run(close=close, now=datetime(2026, 10, 8, 15, tzinfo=timezone.utc))

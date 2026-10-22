@@ -134,6 +134,15 @@ class TraderConfig:
         return sum(close.pct_change(lb) for lb in windows) / len(windows)
 
 
+def _yf_version() -> str:
+    """For the late-data alert: which yfinance the PC runs, to tell a Yahoo delay from a library bug."""
+    try:
+        import yfinance
+        return f", yfinance {yfinance.__version__}"
+    except Exception:  # noqa: BLE001 - only a hint in a message
+        return ""
+
+
 def session_cutoff(now: datetime) -> pd.Timestamp:
     """The date before which every daily bar is a finished US session.
 
@@ -744,6 +753,18 @@ class Runner:
         if age > self.cfg.max_data_age_days:
             alerts.append({"level": "error",
                            "message": f"가격 데이터가 {age}일 전 것이라 매매하지 않았습니다."})
+            return self._state(now, meta, alerts=alerts, prices=prices)
+
+        # Yahoo can lag a session behind (2026-10-22: the 23:45 run saw closes
+        # only up to 10/20, so tranche 4's 10/21 decision never happened and
+        # the order day passed without orders). Don't trade on such data; the
+        # agent retries a few minutes later and the next night catches up.
+        want = today.normalize() - mc.bday()
+        if execute and last.normalize() < want:
+            alerts.append({"level": "error", "message":
+                           f"가격 데이터가 {want.month}/{want.day} 종가까지 들어오지 않아 "
+                           f"(마지막 {last.month}/{last.day}{_yf_version()}) 매매하지 않았습니다. "
+                           "잠시 뒤 다시 시도해요."})
             return self._state(now, meta, alerts=alerts, prices=prices)
 
         if self.cfg.staggered:
