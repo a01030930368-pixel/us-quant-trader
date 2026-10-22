@@ -679,6 +679,27 @@ def test_missing_yesterday_is_fetched_without_the_live_bar(monkeypatch, close):
     assert rn._fill_yesterday(close.loc[:today], list(close.columns), today) is not None
 
 
+def test_missing_close_taken_from_last_5min_bar(monkeypatch, close):
+    # 2026-10-23 00:29 KST: the PC's daily data lacked 10/21 even when asked for
+    # finished sessions only; the 5-minute feed (live quotes) still had it.
+    from quant.trader import runner as rn
+    today = pd.Timestamp("2026-10-08")
+    gap = close.loc[:today].drop(pd.Timestamp("2026-10-07"))
+    monkeypatch.setattr(rn, "load_prices", lambda *a, **k: gap.loc[:pd.Timestamp("2026-10-06")])
+    idx = pd.date_range("2026-10-07 09:30", "2026-10-07 15:55", freq="5min", tz=rn.ET)
+    idx = idx.append(pd.date_range("2026-10-08 09:30", periods=12, freq="5min", tz=rn.ET))
+    bars = pd.DataFrame({t: np.linspace(100, 110, len(idx)) for t in close.columns}, index=idx)
+    from quant import live
+    monkeypatch.setattr(live, "_download", lambda syms: bars[syms])
+    out = rn._fill_yesterday(gap, list(close.columns), today)
+    day = pd.Timestamp("2026-10-07")
+    assert day in out.index and out.index.is_monotonic_increasing
+    assert out.loc[day, "SPY"] == pytest.approx(float(bars.loc["2026-10-07 15:55", "SPY"]))
+    # a ticker without bars that day: give up, the run's check stops trading
+    monkeypatch.setattr(live, "_download", lambda syms: bars.loc["2026-10-08":, syms])
+    assert day not in rn._fill_yesterday(gap, list(close.columns), today).index
+
+
 def test_runner_writes_preview(tmp_path, close):
     r = make_runner(tmp_path)
     st = r.run(close=close, now=datetime(2026, 10, 8, 15, tzinfo=timezone.utc))
