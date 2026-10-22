@@ -134,6 +134,22 @@ class TraderConfig:
         return sum(close.pct_change(lb) for lb in windows) / len(windows)
 
 
+def _fill_yesterday(close: pd.DataFrame, tickers: list[str], today: pd.Timestamp) -> pd.DataFrame:
+    """Yahoo sometimes leaves out the previous session while today's live bar is
+    there (seen on the PC 2026-10-22). A download that ends before today only
+    asks for finished sessions; take the missing rows from it."""
+    want = today.normalize() - mc.bday()
+    done = close.index[close.index < today.normalize()]
+    if len(done) and done[-1].normalize() >= want:
+        return close
+    try:
+        hist = load_prices(tickers, "2009-01-01", end=str(today.date()), use_cache=False).dropna()
+    except Exception:  # noqa: BLE001 - the check in run() reports it
+        return close
+    extra = hist.loc[~hist.index.isin(close.index)]
+    return pd.concat([close, extra]).sort_index() if len(extra) else close
+
+
 def _yf_version() -> str:
     """For the late-data alert: which yfinance the PC runs, to tell a Yahoo delay from a library bug."""
     try:
@@ -740,6 +756,7 @@ class Runner:
         if close is None:
             tickers = sorted(set(DATA_TICKERS) | set(self.cfg.canary))
             close = load_prices(tickers, "2009-01-01", use_cache=False).dropna()
+            close = _fill_yesterday(close, tickers, today)
             fx_source = fx_source or fetch_usdkrw
         self.fx = fx_source() if fx_source else None
         last = close.index[-1]
@@ -759,11 +776,17 @@ class Runner:
         # only up to 10/20, so tranche 4's 10/21 decision never happened and
         # the order day passed without orders). Don't trade on such data; the
         # agent retries a few minutes later and the next night catches up.
+        # During US hours the last row is today's live bar, so look at the last
+        # finished session (2026-10-23 00:15 KST: the PC had 10/20 and a live
+        # 10/22 row, but no 10/21).
         want = today.normalize() - mc.bday()
-        if execute and last.normalize() < want:
+        done = close.index[close.index < today.normalize()]
+        got = done[-1] if len(done) else None
+        if execute and (got is None or got.normalize() < want):
+            seen = f"{got.month}/{got.day}" if got is not None else "없음"
             alerts.append({"level": "error", "message":
                            f"가격 데이터가 {want.month}/{want.day} 종가까지 들어오지 않아 "
-                           f"(마지막 {last.month}/{last.day}{_yf_version()}) 매매하지 않았습니다. "
+                           f"(마지막 {seen}{_yf_version()}) 매매하지 않았습니다. "
                            "잠시 뒤 다시 시도해요."})
             return self._state(now, meta, alerts=alerts, prices=prices)
 

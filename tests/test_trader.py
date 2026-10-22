@@ -650,6 +650,35 @@ def test_order_run_waits_for_yesterdays_close(tmp_path, close):
     assert ok["next_rebalance"]["order_date"] > str(day.date())
 
 
+def test_order_run_sees_gap_before_todays_live_bar(tmp_path, close):
+    # 2026-10-23 00:15 KST: the PC had 10/20 and a live 10/22 bar but no 10/21.
+    from quant.trader.runner import next_rebalance
+    r = canary_runner(tmp_path)
+    px = canary_close(close)
+    day = pd.Timestamp(next_rebalance(pd.Timestamp("2026-09-28"), r.cfg)["order_date"])
+    night = datetime(day.year, day.month, day.day, 15, 15, tzinfo=timezone.utc)  # 00:15 KST, US open
+    gap = px.loc[:day].drop(day - pd.offsets.BDay(1))
+    st = r.run(close=gap, now=night)
+    assert "가격 데이터가" in errors(st) and not trades(r)
+
+
+def test_missing_yesterday_is_fetched_without_the_live_bar(monkeypatch, close):
+    from quant.trader import runner as rn
+    today = pd.Timestamp("2026-10-08")
+    gap = close.loc[:today].drop(pd.Timestamp("2026-10-07"))
+    asked = {}
+
+    def fake(tickers, start, end=None, use_cache=True, field="Close"):
+        asked["end"] = end
+        return close.loc[:pd.Timestamp(end) - pd.Timedelta(days=1)]
+    monkeypatch.setattr(rn, "load_prices", fake)
+    out = rn._fill_yesterday(gap, list(close.columns), today)
+    assert asked["end"] == "2026-10-08"
+    assert pd.Timestamp("2026-10-07") in out.index and out.index[-1] == today
+    assert out.index.is_monotonic_increasing
+    assert rn._fill_yesterday(close.loc[:today], list(close.columns), today) is not None
+
+
 def test_runner_writes_preview(tmp_path, close):
     r = make_runner(tmp_path)
     st = r.run(close=close, now=datetime(2026, 10, 8, 15, tzinfo=timezone.utc))
