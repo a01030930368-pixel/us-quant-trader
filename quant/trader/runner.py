@@ -144,10 +144,42 @@ def _fill_yesterday(close: pd.DataFrame, tickers: list[str], today: pd.Timestamp
         return close
     try:
         hist = load_prices(tickers, "2009-01-01", end=str(today.date()), use_cache=False).dropna()
+        extra = hist.loc[~hist.index.isin(close.index)]
+        if len(extra):
+            close = pd.concat([close, extra]).sort_index()
     except Exception:  # noqa: BLE001 - the check in run() reports it
+        pass
+    done = close.index[close.index < today.normalize()]
+    if len(done) and done[-1].normalize() >= want:
         return close
-    extra = hist.loc[~hist.index.isin(close.index)]
-    return pd.concat([close, extra]).sort_index() if len(extra) else close
+    # Still missing (the PC's daily data lacked 10/21 both ways): the last
+    # 5-minute bar of that session, the same feed the dashboard's live quotes use.
+    row = _close_from_intraday(tickers, want)
+    if row is None:
+        return close
+    return pd.concat([close, pd.DataFrame([row], index=[want])[close.columns]]).sort_index()
+
+
+def _close_from_intraday(tickers: list[str], day: pd.Timestamp, fetch=None) -> dict | None:
+    """Each ticker's last 5-minute close on `day` (US Eastern date), or None
+    unless every ticker has one. Unadjusted, which equals the adjusted close for
+    the latest session except on an ex-dividend day."""
+    try:
+        from quant import live
+        bars = (fetch or live._download)(list(tickers))
+    except Exception:  # noqa: BLE001 - the check in run() reports it
+        return None
+    if bars is None or bars.empty:
+        return None
+    idx = bars.index.tz_convert(ET) if bars.index.tz is not None else bars.index
+    on_day = bars[idx.date == day.date()]
+    row = {}
+    for t in tickers:
+        s = on_day[t].dropna() if t in on_day else pd.Series(dtype=float)
+        if s.empty:
+            return None
+        row[t] = float(s.iloc[-1])
+    return row
 
 
 def _yf_version() -> str:
