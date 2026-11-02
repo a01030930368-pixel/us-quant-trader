@@ -47,6 +47,15 @@ def test_all_ready(tmp_path):
     assert "$714.29" in by_id(items)["budget"]["detail"] and "TQQQ 3주" in by_id(items)["budget"]["detail"]
 
 
+def test_budget_item_from_mintory_setting(tmp_path):
+    (tmp_path / "app_budget.json").write_text(json.dumps({"budget_krw": 1000000, "keep_usd": 250}))
+    item = by_id(readiness.checklist(tmp_path, {}, {}, date(2026, 11, 26)))["budget"]
+    assert item["status"] == "todo" and "1,000,000원" in item["detail"] and "$250.00" in item["detail"]
+    info = readiness.budget_info(tmp_path, {"APP_BUDGET_KRW": "3000000"})
+    assert info["budget_krw"] == 1000000 and info["source"] == "app" and info["keep_usd"] == 250
+    assert readiness.budget_info(tmp_path / "x", {"APP_BUDGET_KRW": "3000000"})["source"] == "env"
+
+
 def test_budget_item(tmp_path):
     assert by_id(readiness.checklist(tmp_path, {}, {}, date(2026, 11, 26)))["budget"]["status"] == "fail"
     item = by_id(readiness.checklist(tmp_path, {"APP_BUDGET_KRW": "1000000"}, {}, date(2026, 11, 26)))["budget"]

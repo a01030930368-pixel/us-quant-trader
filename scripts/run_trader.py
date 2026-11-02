@@ -92,8 +92,9 @@ def rehearse(cfg: TraderConfig) -> None:
     if not key or not secret:
         raise SystemExit(".env 에 KIWOOM_LIVE_APP_KEY, KIWOOM_LIVE_SECRET_KEY 가 없어 리허설을 건너뜁니다.")
     broker = ReadOnlyBroker(KiwoomBroker(key, secret, mock=False, exchanges=EXCHANGES))
-    cfg = replace(cfg, state_dir=Path(cfg.state_dir) / "rehearsal")
-    broker = app_budget(broker, Path(cfg.state_dir))
+    base = Path(cfg.state_dir)
+    cfg = replace(cfg, state_dir=base / "rehearsal")
+    broker = app_budget(broker, Path(cfg.state_dir), settings_dir=base)
     if broker.__class__.__name__ == "BudgetBroker":
         # A small budget splits into ~$45 pieces; the $50 skip rule would drop
         # most of them (whole-share sim 2015~: 1M KRW 7.3%/yr at $10 vs -0.2% at $50),
@@ -108,19 +109,23 @@ def rehearse(cfg: TraderConfig) -> None:
 SMALL_MIN_TRADE = 10.0
 
 
-def app_budget(broker, state_dir: Path, env=None):
-    """Limit the app to its own slice of a shared real account (.env APP_BUDGET_KRW
-    or APP_BUDGET_USD): it counts only the cash and shares it traded itself.
-    Without a budget the whole account is the app's, as on the mock account.
-    Raising or lowering the number in .env later adds or takes out the difference."""
-    from quant.trader.budget import BudgetBroker, budget_setting
+def app_budget(broker, state_dir: Path, env=None, settings_dir: Path | None = None):
+    """Limit the app to its own slice of a shared real account: it counts only
+    the cash and shares it traded itself. The budget comes from Mintory
+    (settings_dir/app_budget.json, with the owner's protected dollars) or
+    .env APP_BUDGET_KRW / APP_BUDGET_USD. Without one the whole account is the
+    app's, as on the mock account. Changing the amount later adds or takes out
+    the difference."""
+    from quant.trader.budget import BudgetBroker, budget_setting, read_settings
     from quant.trader.runner import fetch_usdkrw
     env = os.environ if env is None else env
+    settings = read_settings(settings_dir) if settings_dir else {}
+    keep = float(settings.get("keep_usd") or 0.0)
     ledger = state_dir / "budget.json"
-    setting = budget_setting(env)
+    setting = budget_setting(env, settings)
     if not setting:
-        return BudgetBroker(broker, ledger) if ledger.exists() else broker
-    b = BudgetBroker(broker, ledger, setting=setting, usdkrw=fetch_usdkrw)
+        return BudgetBroker(broker, ledger, keep_usd=keep) if ledger.exists() else broker
+    b = BudgetBroker(broker, ledger, setting=setting, usdkrw=fetch_usdkrw, keep_usd=keep)
     if b.changed:
         print(b.changed)
     return b

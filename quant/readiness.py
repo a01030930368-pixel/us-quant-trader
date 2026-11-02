@@ -137,18 +137,22 @@ def checklist(paper: Path, env: dict, agent: dict | None = None, today: date | N
                     "키움 실전투자용 앱키를 따로 발급받아 .env 의 KIWOOM_LIVE_APP_KEY, KIWOOM_LIVE_SECRET_KEY 에 넣어 주세요"))
 
     led = _json(paper / "rehearsal" / "budget.json")
-    budget = env.get("APP_BUDGET_KRW", "").strip() or env.get("APP_BUDGET_USD", "").strip()
+    conf = _json(paper / "app_budget.json")
+    keep = float(conf.get("keep_usd") or 0)
+    keep_note = f" · 내 달러 ${keep:,.2f}는 보호" if keep else ""
+    budget = (f"{int(conf['budget_krw']):,}원" if float(conf.get("budget_krw") or 0) > 0 else
+              env.get("APP_BUDGET_KRW", "").strip() or env.get("APP_BUDGET_USD", "").strip())
     if led:
         pos = ", ".join(f"{k} {v.get('qty')}주" for k, v in (led.get("positions") or {}).items())
         out.append(item("budget", "앱 사용한도", "ok",
                         f"시작 ${float(led.get('start_usd', 0)):,.2f} · 앱 현금 ${float(led.get('cash', 0)):,.2f}"
-                        + (f" · 앱 보유 {pos}" if pos else "") + " · 계좌의 다른 주식·돈은 안 건드려요"))
+                        + (f" · 앱 보유 {pos}" if pos else "") + keep_note + " · 계좌의 다른 주식·돈은 안 건드려요"))
     elif budget:
         out.append(item("budget", "앱 사용한도", "todo",
-                        f"{budget} 로 정해 둠. 첫 리허설 때 앱 전용 장부가 만들어져요"))
+                        f"{budget} 로 정해 둠{keep_note}. 첫 리허설 때 앱 전용 장부가 만들어져요"))
     else:
         out.append(item("budget", "앱 사용한도", "fail",
-                        ".env 에 APP_BUDGET_KRW (예: 1000000)를 적어야 해요. 안 적으면 계좌 전체를 앱 돈으로 봐요"))
+                        "위의 '앱 사용한도'에 금액을 적어 주세요. 안 적으면 계좌 전체를 앱 돈으로 봐요"))
 
     chk = _json(paper / KEY_CHECK)
     if not chk:
@@ -202,6 +206,21 @@ def rehearsal_item(paper: Path, today: date) -> dict:
     cash = st.get("cash")
     note = f"{when} · 달러 예수금 ${float(cash):,.2f} · {plan}" if cash is not None else f"{when} · {plan}"
     return item("rehearsal", title, "warn" if stale else "ok", note + (" · 며칠째 리허설이 없어요" if stale else ""))
+
+
+def budget_info(paper: Path, env: dict) -> dict:
+    """What Mintory's budget form shows: the saved setting (or the .env one) and the ledger."""
+    conf = _json(paper / "app_budget.json")
+    krw = conf.get("budget_krw")
+    if not krw:
+        try:
+            krw = int(float(str(env.get("APP_BUDGET_KRW", "") or 0).replace(",", "")))
+        except ValueError:
+            krw = 0
+    led = _json(paper / "rehearsal" / "budget.json")
+    return {"budget_krw": krw or None, "keep_usd": conf.get("keep_usd") or 0,
+            "source": "app" if conf.get("budget_krw") else ("env" if krw else None),
+            "ledger": {k: led.get(k) for k in ("start_usd", "cash", "positions")} if led else None}
 
 
 def summary(items: list[dict]) -> dict:

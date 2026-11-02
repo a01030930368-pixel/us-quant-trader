@@ -103,6 +103,17 @@ def test_pause_toggles_stop_file(server):
     assert not (paper / "STOP").exists()
 
 
+def test_budget_is_set_from_the_screen(server):
+    url, paper, *_ = server
+    code, body = call(url + "/api/budget", {"budget_krw": "1,000,000", "keep_usd": "300"})
+    out = json.loads(body)
+    assert code == 200 and out["budget"]["budget_krw"] == 1000000 and out["budget"]["keep_usd"] == 300
+    assert json.loads((paper / "app_budget.json").read_text(encoding="utf-8"))["keep_usd"] == 300
+    code, body = call(url + "/api/budget", {"budget_krw": "abc"})
+    assert code == 400 and "숫자" in json.loads(body)["error"]
+    assert call(url + "/api/budget", {"budget_krw": "1"}, {"X-Mintory": ""})[0] == 403
+
+
 def test_one_job_at_a_time(server):
     url, paper, release, calls = server
     code, body = call(url + "/api/refresh", {})

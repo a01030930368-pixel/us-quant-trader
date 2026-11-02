@@ -627,6 +627,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(409, {"error": f"{JOB_NAMES.get(_job['name'], '다른 작업')} 중이에요. "
                                                  "끝나면 다시 눌러주세요.", **readiness_report()})
             return self._json(200, readiness_report())
+        if path == "/api/budget":  # the app budget and the owner's protected dollars
+            from quant.trader.budget import save_settings
+            try:
+                save_settings(PAPER, body.get("budget_krw"), body.get("keep_usd"))
+            except ValueError as e:
+                return self._json(400, {"error": str(e), **readiness_report()})
+            log("앱 사용한도 변경")
+            return self._json(200, readiness_report())
         if path == "/api/live-key-check":  # read-only balance query, never an order
             from quant import notify, readiness
             readiness.check_live_keys(notify.read_env(), PAPER)
@@ -639,7 +647,8 @@ def readiness_report() -> dict:
     items = readiness.checklist(PAPER, notify.read_env(), read_state(),
                                 wake=readiness.wake_task_registered(WAKE_TASK))
     flows = {"paper": withdraw.flows(PAPER)[:60], "live": withdraw.flows(PAPER / "rehearsal")[:60]}
-    return {"items": items, "summary": readiness.summary(items), "flows": flows}
+    return {"items": items, "summary": readiness.summary(items), "flows": flows,
+            "budget": readiness.budget_info(PAPER, notify.read_env())}
 
 
 def start_server(wait: float = 0) -> Server | None:

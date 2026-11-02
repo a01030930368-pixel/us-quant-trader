@@ -235,3 +235,38 @@ def test_runner_skips_trading_without_twin_prices(tmp_path):
     s = r.run(close=_close(), now=datetime(2026, 10, 8, 14, tzinfo=timezone.utc))
     assert "가격을 받지 못해" in " ".join(a["message"] for a in s["alerts"])
     assert r.broker.positions() == {}
+
+
+# -- budget set in Mintory, protected personal dollars --------------------------
+def test_protected_dollars_are_never_spent(tmp_path):
+    inner = LaterFillBroker(cash=1_000.0)          # $300 of it is the owner's own
+    b = BudgetBroker(inner, tmp_path / "budget.json", budget_usd=714.0, keep_usd=300.0)
+    assert b.cash_usd() == 700.0
+    res = b.place_order("IEF", "buy", 8, 90.0)     # $720 would dip into the owner's $300
+    assert not res["ok"] and "내 달러 보호" in res["msg"] and inner.orders == []
+    assert b.place_order("IEF", "buy", 7, 90.0)["ok"]
+
+
+def test_settings_saved_from_mintory_win_over_env(tmp_path):
+    from quant.trader.budget import read_settings, save_settings
+    rec = save_settings(tmp_path, "1,000,000", "500")
+    assert rec["budget_krw"] == 1_000_000 and rec["keep_usd"] == 500.0
+    assert read_settings(tmp_path)["budget_krw"] == 1_000_000
+    assert budget_setting({"APP_BUDGET_KRW": "3000000"}, read_settings(tmp_path)) == ("APP_BUDGET_KRW", 1_000_000.0)
+    for bad in ("abc", "-5", "5000"):
+        with pytest.raises(ValueError):
+            save_settings(tmp_path, bad, 0)
+
+
+def test_run_trader_uses_mintory_settings(monkeypatch, tmp_path):
+    from quant.trader import runner
+    from quant.trader.budget import save_settings
+    from scripts import run_trader
+    monkeypatch.setattr(runner, "fetch_usdkrw", lambda: 1_400.0)
+    save_settings(tmp_path, 1_000_000, 200)
+    inner = LaterFillBroker(cash=900.0)
+    b = run_trader.app_budget(inner, tmp_path / "rehearsal", env={}, settings_dir=tmp_path)
+    assert b.cash_usd() == pytest.approx(700.0)     # min($714.29, $900 - $200)
+    # Same amount moved from .env to Mintory: no change to the ledger.
+    again = run_trader.app_budget(inner, tmp_path / "rehearsal", env={"APP_BUDGET_KRW": "1000000"}, settings_dir=tmp_path)
+    assert again.changed == ""
