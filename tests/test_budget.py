@@ -189,3 +189,49 @@ def test_run_trader_app_budget(monkeypatch, tmp_path):
     assert json.loads((tmp_path / "budget.json").read_text(encoding="utf-8"))["start_usd"] == pytest.approx(714.29)
     # Once a ledger exists it stays in charge even if the .env line is removed.
     assert isinstance(run_trader.app_budget(inner, tmp_path, env={}), BudgetBroker)
+
+
+# -- cheaper twins (cfg.trade_as) ----------------------------------------------
+def _close():
+    import numpy as np
+    import pandas as pd
+    from quant.trader.runner import DATA_TICKERS
+    rng = np.random.default_rng(3)
+    idx = pd.bdate_range("2015-01-01", "2026-10-08")
+    return pd.DataFrame(100 * np.cumprod(1 + rng.normal(0.0004, 0.01, (len(idx), len(DATA_TICKERS))), axis=0),
+                        index=idx, columns=DATA_TICKERS)
+
+
+TWINS = {"SPY": "SPYM", "QQQ": "QQQM", "GLD": "GLDM", "IWM": "VTWO"}
+
+
+def test_traded_merges_weights_onto_twins():
+    from quant.trader.runner import traded
+    cfg = TraderConfig(trade_as=TWINS)
+    assert traded({"QQQ": 0.5, "TQQQ": 0.25, "GLD": 0.1}, cfg) == {"QQQM": 0.5, "TQQQ": 0.25, "GLDM": 0.1}
+
+
+def test_runner_orders_the_twins_with_their_own_prices(tmp_path):
+    close = _close()
+    cfg = TraderConfig(state_dir=tmp_path / "p", max_order_usd=50_000, trade_as=TWINS)
+    r = Runner(SimBroker(tmp_path / "a.json", starting_cash=10_000.0), cfg)
+    fetched = []
+    r.trade_fetch = lambda names: (fetched.append(names), __import__("pandas").DataFrame(
+        {t: [close[o].iloc[-1] / 4] for o, t in TWINS.items()}))[1]
+    s = r.run(close=close, now=datetime(2026, 10, 8, 14, tzinfo=timezone.utc), execute=False)
+    syms = {o["symbol"] for o in s["planned_orders"]}
+    assert syms and not syms & set(TWINS) and fetched == [sorted(TWINS.values())]
+    for o in s["planned_orders"]:
+        if o["symbol"] in TWINS.values():
+            orig = next(k for k, v in TWINS.items() if v == o["symbol"])
+            assert o["ref_price"] == pytest.approx(close[orig].iloc[-1] / 4, abs=0.01)
+
+
+def test_runner_skips_trading_without_twin_prices(tmp_path):
+    import pandas as pd
+    cfg = TraderConfig(state_dir=tmp_path / "p", max_order_usd=50_000, trade_as=TWINS)
+    r = Runner(SimBroker(tmp_path / "a.json", starting_cash=10_000.0), cfg)
+    r.trade_fetch = lambda names: pd.DataFrame()
+    s = r.run(close=_close(), now=datetime(2026, 10, 8, 14, tzinfo=timezone.utc))
+    assert "가격을 받지 못해" in " ".join(a["message"] for a in s["alerts"])
+    assert r.broker.positions() == {}

@@ -71,7 +71,15 @@ def main() -> None:
 
 
 EXCHANGES = {"SPY": "NY", "IWM": "NY", "EFA": "NY", "GLD": "NY", "IEF": "ND",
-             "TLT": "ND", "QQQ": "ND", "TQQQ": "ND", "UPRO": "NY"}
+             "TLT": "ND", "QQQ": "ND", "TQQQ": "ND", "UPRO": "NY",
+             "SPYM": "NY", "QQQM": "ND", "GLDM": "NY", "VTWO": "ND"}
+
+# Cheaper twins (same index, lower share price) traded with a small app budget
+# (user's choice 2026-11-02). Signals still use the originals' long history.
+# SPYM is the former SPLG (renamed 2025-10-31). Prices around 2026-11:
+# SPY $755 -> SPYM ~$89, QQQ $690 -> QQQM ~$284, GLD $356 -> GLDM ~$72,
+# IWM $279 -> VTWO ~$112. EFA, IEF, TLT, TQQQ and UPRO are already cheap.
+CHEAP_TWINS = {"SPY": "SPYM", "QQQ": "QQQM", "GLD": "GLDM", "IWM": "VTWO"}
 
 
 def rehearse(cfg: TraderConfig) -> None:
@@ -88,8 +96,9 @@ def rehearse(cfg: TraderConfig) -> None:
     broker = app_budget(broker, Path(cfg.state_dir))
     if broker.__class__.__name__ == "BudgetBroker":
         # A small budget splits into ~$45 pieces; the $50 skip rule would drop
-        # most of them (whole-share sim 2015~: 1M KRW 7.3%/yr at $10 vs -0.2% at $50).
-        cfg = replace(cfg, min_trade_usd=min(cfg.min_trade_usd, SMALL_MIN_TRADE))
+        # most of them (whole-share sim 2015~: 1M KRW 7.3%/yr at $10 vs -0.2% at $50),
+        # and cheaper twins fit whole shares better (12.4%/yr at 1M KRW).
+        cfg = replace(cfg, min_trade_usd=min(cfg.min_trade_usd, SMALL_MIN_TRADE), trade_as=dict(CHEAP_TWINS))
     status = Runner(broker, cfg, mode="kiwoom_live").run(execute=False)
     print(f"리허설 (주문 없음): 현금 {status['cash']}, 예정 주문 {len(status.get('planned_orders') or [])}건")
     for a in status["alerts"]:
