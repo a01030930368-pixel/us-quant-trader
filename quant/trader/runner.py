@@ -17,7 +17,7 @@ import json
 import math
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -101,6 +101,10 @@ class TraderConfig:
     canary: tuple[str, ...] = ()
     tranches: int = 1
     tranche_spacing: int = 5
+    # Trade a cheaper twin of an ETF (same index, lower share price) while the
+    # signal still uses the original's long history, e.g. {"QQQ": "QQQM"}.
+    # For small live budgets, where whole shares of a $700 ETF don't fit.
+    trade_as: dict[str, str] = field(default_factory=dict)
 
     @property
     def staggered(self) -> bool:
@@ -385,12 +389,36 @@ def preview_rebalance(close: pd.DataFrame, today: pd.Timestamp, cfg: TraderConfi
     # moving to IEF on 10/22 instead of one quarter).
     px = _completed(px.loc[:sig], sig + mc.bday())
     w = model_weights(px, cfg).loc[sig] / (1 - cfg.cash_buffer)
-    weights = {t: round(float(v), 4) for t, v in w.items() if v > 1e-9}
+    weights = traded({t: round(float(v), 4) for t, v in w.items() if v > 1e-9}, cfg)
     orders = plan_orders(weights, {**{t: float(px[t].iloc[-1]) for t in px.columns}, **prices},
                          positions, cash, cfg)
     return {**nxt, "as_of": str(close.index[close.index < today.normalize()][-1].date()),
             "weights": weights,
             "orders": [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in o.items()} for o in orders]}
+
+
+def traded(weights: dict[str, float], cfg: TraderConfig) -> dict[str, float]:
+    """Weights keyed by the ticker actually traded (cfg.trade_as)."""
+    out: dict[str, float] = {}
+    for t, v in weights.items():
+        k = cfg.trade_as.get(t, t)
+        out[k] = round(out.get(k, 0.0) + v, 6)
+    return out
+
+
+def load_trade_prices(tickers: list[str], fetch=None) -> dict[str, float]:
+    """Latest close of each traded twin (cfg.trade_as values), fetched apart
+    from the signal data so their shorter history doesn't cut the signal's."""
+    if fetch is None:
+        def fetch(names):
+            return load_prices(names, (pd.Timestamp.today() - pd.Timedelta(days=20)).strftime("%Y-%m-%d"),
+                               use_cache=False)
+    df = fetch(list(tickers))
+    out = {}
+    for t in tickers:
+        if t in df.columns and df[t].notna().any():
+            out[t] = float(df[t].dropna().iloc[-1])
+    return out
 
 
 def plan_orders(weights: dict[str, float], prices: dict[str, float],
@@ -439,6 +467,7 @@ class Runner:
         self.fx_source = None
         self.fx: float | None = None
         self.sleep = time.sleep  # tests replace it
+        self.trade_fetch = None  # cfg.trade_as price source; tests replace it
 
     # -- files ----------------------------------------------------------------
     def _read(self, name: str) -> dict:
@@ -838,6 +867,23 @@ class Runner:
         weights: dict[str, float] = {}
         for t in targets:
             weights[t["symbol"]] = weights.get(t["symbol"], 0.0) + t["weight"]
+        if self.cfg.trade_as:
+            # Trade the cheaper twins; their prices come apart from the signal data.
+            twins = sorted(set(self.cfg.trade_as.values()))
+            missing = [t for t in twins if t not in prices]
+            if missing:
+                try:
+                    prices.update(load_trade_prices(missing, self.trade_fetch))
+                except Exception:  # noqa: BLE001 - reported below
+                    pass
+            missing = [t for t in twins if t not in prices]
+            if missing:
+                alerts.append({"level": "error", "message":
+                               f"{', '.join(missing)} 가격을 받지 못해 매매하지 않았습니다."})
+                return self._state(now, meta, alerts=alerts, prices=prices, targets=targets,
+                                   scores=scores, sig=sig, canary=canary, parts=parts)
+            weights = traded(weights, self.cfg)
+            targets = [{**t, "symbol": self.cfg.trade_as.get(t["symbol"], t["symbol"])} for t in targets]
 
         try:
             positions, cash = self.broker.positions(), self.broker.cash_usd()
