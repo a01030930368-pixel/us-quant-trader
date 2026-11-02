@@ -136,6 +136,20 @@ def checklist(paper: Path, env: dict, agent: dict | None = None, today: date | N
                     ".env 에 입력됨" if keys else
                     "키움 실전투자용 앱키를 따로 발급받아 .env 의 KIWOOM_LIVE_APP_KEY, KIWOOM_LIVE_SECRET_KEY 에 넣어 주세요"))
 
+    led = _json(paper / "rehearsal" / "budget.json")
+    budget = env.get("APP_BUDGET_KRW", "").strip() or env.get("APP_BUDGET_USD", "").strip()
+    if led:
+        pos = ", ".join(f"{k} {v.get('qty')}주" for k, v in (led.get("positions") or {}).items())
+        out.append(item("budget", "앱 사용한도", "ok",
+                        f"시작 ${float(led.get('start_usd', 0)):,.2f} · 앱 현금 ${float(led.get('cash', 0)):,.2f}"
+                        + (f" · 앱 보유 {pos}" if pos else "") + " · 계좌의 다른 주식·돈은 안 건드려요"))
+    elif budget:
+        out.append(item("budget", "앱 사용한도", "todo",
+                        f"{budget} 로 정해 둠. 첫 리허설 때 앱 전용 장부가 만들어져요"))
+    else:
+        out.append(item("budget", "앱 사용한도", "fail",
+                        ".env 에 APP_BUDGET_KRW (예: 1000000)를 적어야 해요. 안 적으면 계좌 전체를 앱 돈으로 봐요"))
+
     chk = _json(paper / KEY_CHECK)
     if not chk:
         out.append(item("api", "실계좌 연결 확인 (조회만)", "todo",

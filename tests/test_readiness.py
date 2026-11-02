@@ -36,12 +36,21 @@ def test_all_ready(tmp_path):
     write(tmp_path)
     (tmp_path / readiness.KEY_CHECK).write_text(json.dumps({"ok": True, "time": "2026-11-26T09:00", "cash_usd": 1234.5}))
     rehearsal(tmp_path)
+    (tmp_path / "rehearsal" / "budget.json").write_text(json.dumps(
+        {"start_usd": 714.29, "cash": 120.5, "positions": {"TQQQ": {"qty": 3, "avg_price": 70.0}}}))
     items = readiness.checklist(tmp_path, ENV, AGENT, date(2026, 11, 26), wake=True)
     assert {i["id"]: i["status"] for i in items} == dict.fromkeys(
-        ["days", "gap", "runs", "orders", "telegram", "limit", "loss", "keys", "api", "rehearsal", "wake",
+        ["days", "gap", "runs", "orders", "telegram", "limit", "loss", "keys", "budget", "api", "rehearsal", "wake",
          "backup", "paused"], "ok")
     assert readiness.summary(items)["ready"]
     assert "$1,234.50" in by_id(items)["api"]["detail"]
+    assert "$714.29" in by_id(items)["budget"]["detail"] and "TQQQ 3주" in by_id(items)["budget"]["detail"]
+
+
+def test_budget_item(tmp_path):
+    assert by_id(readiness.checklist(tmp_path, {}, {}, date(2026, 11, 26)))["budget"]["status"] == "fail"
+    item = by_id(readiness.checklist(tmp_path, {"APP_BUDGET_KRW": "1000000"}, {}, date(2026, 11, 26)))["budget"]
+    assert item["status"] == "todo" and "1000000" in item["detail"]
 
 
 def test_problems_are_flagged(tmp_path):
