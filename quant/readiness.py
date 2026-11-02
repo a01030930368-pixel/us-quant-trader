@@ -117,14 +117,23 @@ def checklist(paper: Path, env: dict, agent: dict | None = None, today: date | N
 
     limit = _num(env, "MAX_ORDER_USD")
     eq_now = float(equity[-1]["equity"]) if equity else None
+    app_led = _json(paper / "rehearsal" / "budget.json")
+    if app_led.get("start_usd"):  # live orders come from the app budget, not the mock account
+        eq_now = float(app_led.get("cash", 0)) + sum(
+            float(p.get("qty", 0)) * float(p.get("avg_price", 0)) for p in (app_led.get("positions") or {}).values())
     if not limit or limit <= 0:
         out.append(item("limit", "주문 한도 (MAX_ORDER_USD)", "fail",
                         ".env 에 주문 하나의 최대 금액(달러)을 적어야 실계좌 주문이 나가요"))
     else:
         note = f"${limit:,.0f}"
         if eq_now:
-            note += f" (지금 평가금액의 {limit / eq_now * 100:.0f}%)"
-        out.append(item("limit", "주문 한도 (MAX_ORDER_USD)", "ok", note))
+            note += (f" (앱 사용한도의 {limit / eq_now * 100:.0f}%)" if app_led.get("start_usd")
+                     else f" (지금 평가금액의 {limit / eq_now * 100:.0f}%)")
+        # Everything can move to IEF in one order (canary off in all tranches).
+        small = bool(app_led.get("start_usd")) and eq_now and limit < eq_now
+        if small:
+            note += " · 앱 돈 전체보다 작아서, 전부 안전자산으로 옮기는 날 주문이 막혀요. 앱 돈보다 조금 크게 올려 주세요"
+        out.append(item("limit", "주문 한도 (MAX_ORDER_USD)", "warn" if small else "ok", note))
 
     loss = _num(env, "MAX_DAILY_LOSS_PCT")
     loss = 10.0 if loss is None and "MAX_DAILY_LOSS_PCT" not in env else loss
@@ -140,7 +149,8 @@ def checklist(paper: Path, env: dict, agent: dict | None = None, today: date | N
     conf = _json(paper / "app_budget.json")
     keep = float(conf.get("keep_usd") or 0)
     keep_note = f" · 내 달러 ${keep:,.2f}는 보호" if keep else ""
-    budget = (f"{int(conf['budget_krw']):,}원" if float(conf.get("budget_krw") or 0) > 0 else
+    budget = (f"${float(conf['budget_usd']):,.2f}" if float(conf.get("budget_usd") or 0) > 0 else
+              f"{int(conf['budget_krw']):,}원" if float(conf.get("budget_krw") or 0) > 0 else
               env.get("APP_BUDGET_KRW", "").strip() or env.get("APP_BUDGET_USD", "").strip())
     if led:
         pos = ", ".join(f"{k} {v.get('qty')}주" for k, v in (led.get("positions") or {}).items())
@@ -211,15 +221,16 @@ def rehearsal_item(paper: Path, today: date) -> dict:
 def budget_info(paper: Path, env: dict) -> dict:
     """What Mintory's budget form shows: the saved setting (or the .env one) and the ledger."""
     conf = _json(paper / "app_budget.json")
-    krw = conf.get("budget_krw")
-    if not krw:
+    shown = f"${conf['budget_usd']}" if conf.get("budget_usd") else conf.get("budget_krw")
+    source = "app" if shown else None
+    if not shown:
         try:
-            krw = int(float(str(env.get("APP_BUDGET_KRW", "") or 0).replace(",", "")))
+            shown = int(float(str(env.get("APP_BUDGET_KRW", "") or 0).replace(",", ""))) or None
         except ValueError:
-            krw = 0
+            shown = None
+        source = "env" if shown else None
     led = _json(paper / "rehearsal" / "budget.json")
-    return {"budget_krw": krw or None, "keep_usd": conf.get("keep_usd") or 0,
-            "source": "app" if conf.get("budget_krw") else ("env" if krw else None),
+    return {"budget_krw": shown, "keep_usd": conf.get("keep_usd") or 0, "source": source,
             "ledger": {k: led.get(k) for k in ("start_usd", "cash", "positions")} if led else None}
 
 

@@ -56,6 +56,16 @@ def test_budget_item_from_mintory_setting(tmp_path):
     assert readiness.budget_info(tmp_path / "x", {"APP_BUDGET_KRW": "3000000"})["source"] == "env"
 
 
+def test_order_limit_compared_with_the_app_money(tmp_path):
+    write(tmp_path)
+    (tmp_path / "rehearsal").mkdir()
+    (tmp_path / "rehearsal" / "budget.json").write_text(json.dumps({"start_usd": 745.03, "cash": 745.03, "positions": {}}))
+    item = by_id(readiness.checklist(tmp_path, {**ENV, "MAX_ORDER_USD": "800"}, AGENT, date(2026, 11, 26)))["limit"]
+    assert item["status"] == "ok" and "앱 사용한도의 107%" in item["detail"]
+    item = by_id(readiness.checklist(tmp_path, {**ENV, "MAX_ORDER_USD": "500"}, AGENT, date(2026, 11, 26)))["limit"]
+    assert item["status"] == "warn" and "막혀요" in item["detail"]
+
+
 def test_budget_item(tmp_path):
     assert by_id(readiness.checklist(tmp_path, {}, {}, date(2026, 11, 26)))["budget"]["status"] == "fail"
     item = by_id(readiness.checklist(tmp_path, {"APP_BUDGET_KRW": "1000000"}, {}, date(2026, 11, 26)))["budget"]

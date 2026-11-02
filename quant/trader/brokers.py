@@ -212,6 +212,14 @@ class KiwoomBroker:
                 return _num(value)
         raise RuntimeError(f"ust21160 응답에 외화예수금이 없습니다: {data}")
 
+    def order_fills(self, dates: list[str]) -> dict[str, dict]:
+        """Exact fills by order number (ust21150), for the app budget ledger."""
+        return _kiwoom_order_fills(self, dates)
+
+    def dividends(self, start: str, end: str) -> list[dict]:
+        """Dividend deposits after tax (ust21100), for the app budget ledger."""
+        return _kiwoom_dividends(self, start, end)
+
     def place_order(self, ticker: str, side: str, qty: int, ref_price: float,
                     limit_price: float | None = None) -> dict:
         """ust20000 (buy) / ust20001 (sell) on /api/us/ordr.
@@ -249,6 +257,51 @@ class KiwoomBroker:
                 "msg": data.get("return_msg", "")}
 
 
+def _order_no(value) -> str:
+    """Kiwoom pads order numbers with zeros ("000000282"); compare without them."""
+    return str(value or "").strip().lstrip("0")
+
+
+def _rows(data: dict) -> list:
+    # The official example spells it "result_lsit" for ust21150.
+    return data.get("result_list") or data.get("result_lsit") or []
+
+
+def _kiwoom_order_fills(broker, dates: list[str]) -> dict[str, dict]:
+    """ust21150 (daily order/fill history) for each date (YYYYMMDD):
+    {order number: {"symbol", "side", "filled", "price", "left", "cancelled"}}."""
+    out: dict[str, dict] = {}
+    for day in dates:
+        data = broker.call("/api/us/acnt", "ust21150",
+                           {"ord_dt": day, "query_tp": "1", "slby_tp": "0", "stex_tp": "",
+                            "stk_cd": "", "oppo_trde_tp": "%", "fr_ord_no": ""})
+        for r in _rows(data):
+            no = _order_no(r.get("ord_no"))
+            if not no:
+                continue
+            out[no] = {"symbol": str(r.get("stk_cd", "")).strip(),
+                       "side": "sell" if "매도" in str(r.get("slby_tp_nm", "")) else "buy",
+                       "filled": int(_num(r.get("cntr_qty"))), "price": _num(r.get("cntr_uv")),
+                       "left": int(_num(r.get("ord_remnq"))), "cancelled": int(_num(r.get("cncl_qty")))}
+    return out
+
+
+def _kiwoom_dividends(broker, start: str, end: str) -> list[dict]:
+    """ust21100 (transaction history) dividend deposits (tp 8) between two
+    dates (YYYYMMDD): [{"id", "date", "symbol", "usd"}], usd after tax."""
+    data = broker.call("/api/us/acnt", "ust21100",
+                       {"strt_dt": start, "end_dt": end, "tp": "8", "stex_tp": "", "stk_cd": "",
+                        "krw_repl_skip_yn": "Y"})
+    out = []
+    for r in _rows(data):
+        usd = _num(r.get("fc_exct_amt")) or (_num(r.get("fc_deal_amt")) - _num(r.get("frgn_pay_txam")))
+        sym = str(r.get("stk_cd", "")).strip()
+        if usd > 0 and sym:
+            out.append({"id": f"{r.get('deal_dt', '')}-{_order_no(r.get('deal_no'))}-{sym}",
+                        "date": str(r.get("deal_dt", "")), "symbol": sym, "usd": usd})
+    return out
+
+
 def _parse_expiry(value: str | None) -> float:
     """expires_dt looks like 20261010235959; fall back to 12h."""
     try:
@@ -284,3 +337,9 @@ class ReadOnlyBroker:
 
     def place_order(self, *a, **kw) -> dict:
         raise RuntimeError("리허설 중에는 주문을 내지 않습니다.")
+
+    def __getattr__(self, name):
+        # read-only lookups (order_fills, dividends) pass through
+        if name in ("order_fills", "dividends"):
+            return getattr(self.inner, name)
+        raise AttributeError(name)

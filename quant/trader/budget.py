@@ -12,14 +12,22 @@ trades grow that to 1,200,000 it uses 1,200,000, and after a loss to 800,000
 it uses 800,000. The owner's other holdings and cash are never counted,
 bought or sold, even when the owner holds the same ETF.
 
-Kiwoom accepts a limit order and the fill only shows up later in the balance,
-so each order the app sends is kept as "pending" together with the account's
-quantity of that symbol at the moment the order was sent. When the balance
-moves in the order's direction, that move (up to the order's size) is counted
-as the app's fill. Limit orders last one session, so a pending order older
-than PENDING_HOURS is dropped as unfilled. The owner should not trade the same
-symbol by hand while an app order is pending (the app's order nights), or the
-two fills can't be told apart.
+Kiwoom accepts a limit order and the fill only shows up later in the balance.
+The ledger keeps, per symbol, how many shares are the owner's ("outside" =
+account quantity minus the app's). At every balance read, a change in the
+account quantity goes to the app's pending orders on that symbol (in their
+direction, up to their size, oldest first) and anything left over is the
+owner's own trade. So a resent order or two orders on one symbol can never
+count one fill twice. A pending order is written to the ledger before it is
+sent, so a crash mid-send can't leave an app fill looking like the owner's.
+Limit orders last one session, so a pending order older than PENDING_HOURS
+is dropped as unfilled. The owner should not trade the same symbol by hand in
+the minutes an app order is pending, or the two fills can't be told apart.
+
+The app's cash moves by what each fill really cost: the change in the
+account's dollars when it matches the fills (price slippage and fees
+included), else the order price plus an estimated fee. Dividends paid on the
+app's shares are not counted (they can't be told from the owner's deposits).
 
 Ledger: paper/<state>/budget.json (written atomically).
 """
@@ -30,6 +38,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+KST = timezone(timedelta(hours=9))
 PENDING_HOURS = 20       # a day order that hasn't filled by then never will
 FEE_ESTIMATE = 0.0025    # used only when the cash change can't be attributed
 
@@ -105,49 +114,127 @@ class BudgetBroker:
         os.replace(tmp, self.path)
 
     # -- syncing fills ---------------------------------------------------
+    def _exact_fills(self, pend: list) -> dict:
+        """Kiwoom's own fill records for the pending orders, by order number
+        (ust21150), or {} when the broker can't tell (then balances decide)."""
+        if not hasattr(self.inner, "order_fills"):
+            return {}
+        dates = sorted({d for o in pend if o.get("order_no") for d in o.get("dates") or []})
+        if not dates:
+            return {}
+        try:
+            return self.inner.order_fills(dates) or {}
+        except Exception:  # noqa: BLE001 - fall back to balance changes
+            return {}
+
     def _sync(self) -> dict:
         """Read the real account, count the app's fills, return the real positions."""
         actual = self.inner.positions()
         pend = self.led.get("pending") or []
-        if pend:
-            fills, keep = [], []
-            cutoff = self.now() - timedelta(hours=PENDING_HOURS)
-            for o in pend:
-                held = int((actual.get(o["symbol"]) or {}).get("qty", 0))
-                move = held - int(o["base_qty"])
-                got = max(0, min(move if o["side"] == "buy" else -move, int(o["qty"])))
+        outside = self.led.setdefault("outside", {})
+        mine = self.led["positions"]
+        fills, changed = [], False
+        # 1) Orders Kiwoom reports by order number: exact shares and price.
+        exact = self._exact_fills(pend)
+        known: dict[str, int] = {}            # signed shares per symbol counted in step 1
+        for o in pend:
+            info = exact.get(str(o.get("order_no") or ""))
+            o["exact"] = info is not None
+            if info is None:
+                continue
+            new = int(info["filled"]) - int(o.get("booked", 0))
+            if new > 0:
+                fills.append((o, new, float(info["price"]) or float(o["price"])))
+                o["booked"] = int(info["filled"])
+                known[o["symbol"]] = known.get(o["symbol"], 0) + (new if o["side"] == "buy" else -new)
+            o["qty"] = int(info["left"])
+        # 2) Everything else from balance changes; what no app order explains is the owner's.
+        for sym in sorted(set(actual) | set(outside) | set(mine) | {o["symbol"] for o in pend}):
+            held = int((actual.get(sym) or {}).get("qty", 0))
+            app = int((mine.get(sym) or {}).get("qty", 0))
+            if sym not in outside:          # first sight: whatever isn't the app's is the owner's
+                outside[sym] = max(0, held - app)
+                changed = True
+                continue
+            move = held - app - int(outside[sym]) - known.get(sym, 0)
+            for o in (o for o in pend if o["symbol"] == sym and o["qty"] > 0 and not o["exact"]):
+                want = move if o["side"] == "buy" else -move
+                got = max(0, min(want, int(o["qty"])))
                 if got:
-                    fills.append((o, got))
+                    fills.append((o, got, float(o["price"])))
                     o["qty"] = int(o["qty"]) - got
-                    o["base_qty"] = int(o["base_qty"]) + (got if o["side"] == "buy" else -got)
-                if o["qty"] > 0 and datetime.fromisoformat(o["time"]) > cutoff:
-                    keep.append(o)
+                    o["booked"] = int(o.get("booked", 0)) + got   # so step 1 never counts it again
+                    move -= got if o["side"] == "buy" else -got
+            if move:
+                outside[sym] = max(0, int(outside[sym]) + move)
+                changed = True
+        if pend or fills:
+            cutoff = self.now() - timedelta(hours=PENDING_HOURS)
+            self.led["pending"] = [o for o in pend if o["qty"] > 0 and datetime.fromisoformat(o["time"]) > cutoff]
             cash_now = self.inner.cash_usd()
             if fills:
                 self._book(fills, cash_now)
-            self.led["pending"] = keep
             self.led["cash_seen"] = round(cash_now, 2)
+            changed = True
+        waiting = {o["symbol"] for o in self.led.get("pending") or []}
+        for sym in [k for k, v in outside.items() if not v and k not in actual and k not in mine and k not in waiting]:
+            outside.pop(sym)
+        changed |= self._dividends(actual)
+        if changed:
             self._save()
         self._actual = actual
         return actual
 
+    def _dividends(self, actual: dict) -> bool:
+        """Once a day: add the app's share of ETF dividends (after tax) to its
+        cash, split by the app's part of the account's shares of that ETF."""
+        if not hasattr(self.inner, "dividends"):
+            return False
+        today = self.now().astimezone(KST).date()
+        if self.led.get("div_checked") == today.isoformat():
+            return False
+        start = self.led.get("div_from") or self.led.get("created", today.isoformat())[:10]
+        try:
+            rows = self.inner.dividends(start.replace("-", ""), today.strftime("%Y%m%d")) or []
+        except Exception:  # noqa: BLE001 - try again tomorrow
+            return False
+        seen = self.led.setdefault("div_seen", [])
+        for r in rows:
+            if r["id"] in seen:
+                continue
+            seen.append(r["id"])
+            app = int((self.led["positions"].get(r["symbol"]) or {}).get("qty", 0))
+            held = int((actual.get(r["symbol"]) or {}).get("qty", 0))
+            if app and held:
+                usd = round(float(r["usd"]) * min(1.0, app / held), 2)
+                self.led["cash"] = round(self.led["cash"] + usd, 2)
+                self.led.setdefault("dividend_log", []).append(
+                    {"date": r["date"], "symbol": r["symbol"], "usd": usd})
+        self.led["div_seen"] = seen[-500:]
+        self.led["div_checked"] = today.isoformat()
+        # look a week back next time, for late postings (ids keep it from counting twice)
+        self.led["div_from"] = (today - timedelta(days=7)).isoformat()
+        return True
+
     def _book(self, fills: list, cash_now: float) -> None:
         """Add fills to the ledger. When the real cash moved by about what these
-        fills should cost (within 5%), the gap is the real fee and is shared out
-        by size; otherwise (a deposit, the owner's own trade) fees are estimated."""
-        gross = [got * float(o["price"]) for o, got in fills]
-        expected = sum(-g if o["side"] == "buy" else g for (o, _), g in zip(fills, gross))
+        fills should cost (fees and price slippage, -3% to +5%), the gap is the
+        real cost difference and is shared out by size; otherwise (a deposit,
+        the owner's own trade at the same moment) fees are estimated."""
+        gross = [got * price for o, got, price in fills]
+        expected = sum(-g if o["side"] == "buy" else g for (o, _, _), g in zip(fills, gross))
         seen = self.led.get("cash_seen")
         fee_total = None
         if seen is not None:
             fee_total = expected - (cash_now - float(seen))
-            if not (-0.001 * sum(gross) <= fee_total <= 0.05 * sum(gross)):
+            # Marketable limits fill up to 1.5% from the order price, plus fees.
+            if not (-0.03 * sum(gross) <= fee_total <= 0.05 * sum(gross)):
                 fee_total = None
-        for (o, got), g in zip(fills, gross):
+        for (o, got, price), g in zip(fills, gross):
             fee = fee_total * g / sum(gross) if fee_total is not None else g * FEE_ESTIMATE
-            self._fill(o, got, g, fee)
+            self._fill(o, got, g, fee, price)
 
-    def _fill(self, o: dict, qty: int, gross: float, fee: float) -> None:
+    def _fill(self, o: dict, qty: int, gross: float, fee: float, price: float) -> None:
         pos = self.led["positions"]
         mine = pos.get(o["symbol"]) or {"qty": 0, "avg_price": 0.0}
         if o["side"] == "buy":
@@ -165,7 +252,7 @@ class BudgetBroker:
             pos.pop(o["symbol"], None)
         self.led.setdefault("fills", []).append(
             {"time": self.now().isoformat(timespec="seconds"), "symbol": o["symbol"],
-             "side": o["side"], "qty": qty, "price": float(o["price"]), "fee": round(fee, 2)})
+             "side": o["side"], "qty": qty, "price": round(price, 4), "fee": round(fee, 2)})
         self.led["fills"] = self.led["fills"][-200:]
 
     # -- broker surface --------------------------------------------------
@@ -190,11 +277,11 @@ class BudgetBroker:
         return round(max(0.0, min(float(self.led["cash"]), real - self.keep_usd)), 2)
 
     def place_order(self, ticker: str, side: str, qty: int, ref_price: float, **kw) -> dict:
+        self._sync()                       # owner's shares and earlier fills up to date
         if side == "sell":
             mine = int((self.led["positions"].get(ticker) or {}).get("qty", 0))
             if qty > mine:
                 return {"ok": False, "msg": f"앱이 산 {ticker} 는 {mine}주뿐이라 {qty}주를 팔 수 없어요 (내 다른 주식은 안 건드려요)"}
-        base = int((self.inner.positions().get(ticker) or {}).get("qty", 0))
         base_cash = self.inner.cash_usd()
         if side == "buy":
             need, free = qty * ref_price, self._available(base_cash)
@@ -202,13 +289,28 @@ class BudgetBroker:
                 why = (f"내 달러 보호 ${self.keep_usd:,.2f}를 빼면 앱이 쓸 수 있는 돈이 ${free:,.2f}뿐이라"
                        if free < float(self.led["cash"]) else f"앱 사용한도 안의 현금 ${self.led['cash']:,.2f}로는")
                 return {"ok": False, "msg": f"{why} ${need:,.2f} 매수를 못 해요"}
-        res = self.inner.place_order(ticker, side, qty, ref_price, **kw)
-        if res.get("ok") or res.get("status") == "pending":
-            self.led.setdefault("pending", []).append(
-                {"symbol": ticker, "side": side, "qty": int(qty), "price": float(ref_price),
-                 "base_qty": base, "base_cash": round(base_cash, 2),
-                 "time": self.now().isoformat(timespec="seconds")})
-            self.led["cash_seen"] = round(base_cash, 2)
+        outside = self.led.setdefault("outside", {})
+        if ticker not in outside:          # the owner's shares before this order
+            held = int((self._actual.get(ticker) or {}).get("qty", 0))
+            outside[ticker] = max(0, held - int((self.led["positions"].get(ticker) or {}).get("qty", 0)))
+        # Written before sending: if the PC dies mid-send, the fill still counts as the app's.
+        day = self.now().astimezone(KST).date()
+        rec = {"symbol": ticker, "side": side, "qty": int(qty), "price": float(ref_price),
+               "time": self.now().isoformat(timespec="seconds"),
+               # Kiwoom's order date may be the Korean or the US date
+               "dates": [(day - timedelta(days=1)).strftime("%Y%m%d"), day.strftime("%Y%m%d")]}
+        self.led.setdefault("pending", []).append(rec)
+        self.led["cash_seen"] = round(base_cash, 2)
+        self._save()
+        try:
+            res = self.inner.place_order(ticker, side, qty, ref_price, **kw)
+        except Exception:
+            res = {"ok": False, "status": "pending", "msg": "주문 중 오류 - 접수 여부 불확실, 잔고로 확인"}
+        if not (res.get("ok") or res.get("status") == "pending"):
+            self.led["pending"].remove(rec)     # refused: nothing will fill
+            self._save()
+        elif res.get("order_no"):
+            rec["order_no"] = str(res["order_no"]).strip().lstrip("0")
             self._save()
         return res
 
@@ -239,13 +341,23 @@ def save_settings(folder: Path, budget_krw, keep_usd, now=_now) -> dict:
         if x < 0:
             raise ValueError(f"{name}는 0 이상이어야 해요")
         return x
-    krw = num(budget_krw, "앱 사용한도")
-    if krw and krw < 100_000:
-        raise ValueError("앱 사용한도는 10만 원 이상으로 적어 주세요")
-    if krw > 1_000_000_000:
-        raise ValueError("앱 사용한도가 너무 커요. 숫자를 확인해 주세요")
-    rec = {"budget_krw": round(krw), "keep_usd": round(num(keep_usd, "내 달러 보호"), 2),
-           "updated": now().isoformat(timespec="seconds")}
+    keep = round(num(keep_usd, "내 달러 보호"), 2)
+    if str(budget_krw or "").strip().startswith("$"):
+        # Dollars as received after the exchange, e.g. "$737.50": exact, no rate guess.
+        usd = num(budget_krw, "앱 사용한도")
+        if usd and usd < 70:
+            raise ValueError("앱 사용한도는 $70 이상으로 적어 주세요")
+        if usd > 1_000_000:
+            raise ValueError("앱 사용한도가 너무 커요. 숫자를 확인해 주세요")
+        rec = {"budget_usd": round(usd, 2), "keep_usd": keep}
+    else:
+        krw = num(budget_krw, "앱 사용한도")
+        if krw and krw < 100_000:
+            raise ValueError("앱 사용한도는 10만 원 이상으로 적어 주세요")
+        if krw > 1_000_000_000:
+            raise ValueError("앱 사용한도가 너무 커요. 숫자를 확인해 주세요")
+        rec = {"budget_krw": round(krw), "keep_usd": keep}
+    rec["updated"] = now().isoformat(timespec="seconds")
     path = Path(folder) / SETTINGS
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -259,6 +371,8 @@ def budget_setting(env: dict, settings: dict | None = None) -> tuple[str, float]
     wins; then .env APP_BUDGET_USD, then APP_BUDGET_KRW. The Mintory amount is
     in won and uses the APP_BUDGET_KRW key, so moving the same number from
     .env to Mintory changes nothing. None when nothing positive is set."""
+    if settings and float(settings.get("budget_usd") or 0) > 0:
+        return "APP_BUDGET_USD", float(settings["budget_usd"])
     if settings and float(settings.get("budget_krw") or 0) > 0:
         return "APP_BUDGET_KRW", float(settings["budget_krw"])
     for key in ("APP_BUDGET_USD", "APP_BUDGET_KRW"):
