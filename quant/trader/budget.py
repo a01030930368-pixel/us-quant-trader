@@ -40,12 +40,15 @@ def _now() -> datetime:
 
 class BudgetBroker:
     def __init__(self, inner, ledger_path: Path, budget_usd: float | None = None, now=_now,
-                 setting: tuple[str, float] | None = None, usdkrw=None):
+                 setting: tuple[str, float] | None = None, usdkrw=None, keep_usd: float = 0.0):
         """budget_usd: a fixed starting budget. setting: (".env key", value) as read
         by budget_setting(); when it differs from the one the ledger was made
         with, the difference goes into (or comes out of) the app's cash.
-        usdkrw: a function giving today's USD/KRW, needed for a KRW setting."""
+        usdkrw: a function giving today's USD/KRW, needed for a KRW setting.
+        keep_usd: the owner's own dollars the app must never spend; the app
+        only buys while the account keeps at least this much USD."""
         self.inner = inner
+        self.keep_usd = max(0.0, float(keep_usd or 0.0))
         self.path = Path(ledger_path)
         self.now = now
         self.changed = ""
@@ -177,23 +180,28 @@ class BudgetBroker:
         return out
 
     def cash_usd(self) -> float:
-        """The app's cash, never more than the account's real dollars."""
+        """The app's cash, never more than the account's real dollars minus the
+        owner's protected dollars (keep_usd)."""
         if self._actual is None:
             self._sync()
-        real = self.inner.cash_usd()
-        return round(max(0.0, min(float(self.led["cash"]), real)), 2)
+        return self._available(self.inner.cash_usd())
+
+    def _available(self, real: float) -> float:
+        return round(max(0.0, min(float(self.led["cash"]), real - self.keep_usd)), 2)
 
     def place_order(self, ticker: str, side: str, qty: int, ref_price: float, **kw) -> dict:
         if side == "sell":
             mine = int((self.led["positions"].get(ticker) or {}).get("qty", 0))
             if qty > mine:
                 return {"ok": False, "msg": f"앱이 산 {ticker} 는 {mine}주뿐이라 {qty}주를 팔 수 없어요 (내 다른 주식은 안 건드려요)"}
-        else:
-            need = qty * ref_price
-            if need > float(self.led["cash"]) * 1.02:
-                return {"ok": False, "msg": f"앱 사용한도 안의 현금 ${self.led['cash']:,.2f}로는 ${need:,.2f} 매수를 못 해요"}
         base = int((self.inner.positions().get(ticker) or {}).get("qty", 0))
         base_cash = self.inner.cash_usd()
+        if side == "buy":
+            need, free = qty * ref_price, self._available(base_cash)
+            if need > free * 1.02:
+                why = (f"내 달러 보호 ${self.keep_usd:,.2f}를 빼면 앱이 쓸 수 있는 돈이 ${free:,.2f}뿐이라"
+                       if free < float(self.led["cash"]) else f"앱 사용한도 안의 현금 ${self.led['cash']:,.2f}로는")
+                return {"ok": False, "msg": f"{why} ${need:,.2f} 매수를 못 해요"}
         res = self.inner.place_order(ticker, side, qty, ref_price, **kw)
         if res.get("ok") or res.get("status") == "pending":
             self.led.setdefault("pending", []).append(
@@ -209,9 +217,50 @@ class BudgetBroker:
                 "positions": self.led["positions"], "pending": len(self.led.get("pending") or [])}
 
 
-def budget_setting(env: dict) -> tuple[str, float] | None:
-    """(".env key", amount) for the app budget: APP_BUDGET_USD wins over
-    APP_BUDGET_KRW. None when neither holds a positive number."""
+SETTINGS = "app_budget.json"   # set from Mintory; wins over .env
+
+
+def read_settings(folder: Path) -> dict:
+    try:
+        return json.loads((Path(folder) / SETTINGS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(folder: Path, budget_krw, keep_usd, now=_now) -> dict:
+    """Validate and store the budget set in Mintory. Raises ValueError with a
+    message for the screen."""
+    def num(v, name):
+        raw = str(v if v is not None else "").replace(",", "").replace("$", "").replace("원", "").strip()
+        try:
+            x = float(raw) if raw else 0.0
+        except ValueError:
+            raise ValueError(f"{name}는 숫자로 적어 주세요") from None
+        if x < 0:
+            raise ValueError(f"{name}는 0 이상이어야 해요")
+        return x
+    krw = num(budget_krw, "앱 사용한도")
+    if krw and krw < 100_000:
+        raise ValueError("앱 사용한도는 10만 원 이상으로 적어 주세요")
+    if krw > 1_000_000_000:
+        raise ValueError("앱 사용한도가 너무 커요. 숫자를 확인해 주세요")
+    rec = {"budget_krw": round(krw), "keep_usd": round(num(keep_usd, "내 달러 보호"), 2),
+           "updated": now().isoformat(timespec="seconds")}
+    path = Path(folder) / SETTINGS
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    return rec
+
+
+def budget_setting(env: dict, settings: dict | None = None) -> tuple[str, float] | None:
+    """(key, amount) for the app budget. Mintory's setting (app_budget.json)
+    wins; then .env APP_BUDGET_USD, then APP_BUDGET_KRW. The Mintory amount is
+    in won and uses the APP_BUDGET_KRW key, so moving the same number from
+    .env to Mintory changes nothing. None when nothing positive is set."""
+    if settings and float(settings.get("budget_krw") or 0) > 0:
+        return "APP_BUDGET_KRW", float(settings["budget_krw"])
     for key in ("APP_BUDGET_USD", "APP_BUDGET_KRW"):
         raw = str(env.get(key, "") or "").replace(",", "").replace("$", "").replace("원", "").strip()
         try:
