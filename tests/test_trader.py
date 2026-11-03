@@ -65,9 +65,18 @@ def test_stop_file_halts(tmp_path, close):
 
 def test_order_cap_blocks(tmp_path, close):
     cfg = TraderConfig(state_dir=tmp_path / "paper", max_order_usd=1_000)
-    r = Runner(SimBroker(cfg.state_dir / "sim_account.json", starting_cash=100_000), cfg)
-    s = r.run(close=close, now=datetime(2026, 10, 8, tzinfo=timezone.utc))
+    r = Runner(SimBroker(cfg.state_dir / "sim_account.json", starting_cash=100_000), cfg, mode="kiwoom_live")
+    s = r.run(close=close, now=datetime(2026, 10, 8, tzinfo=timezone.utc), execute=False)
     assert "한도" in errors(s) and r.broker.positions() == {}
+
+
+def test_live_order_cap_does_not_apply_to_the_mock_account(tmp_path, close):
+    """2026-11-03: MAX_ORDER_USD=800 (sized for the live app budget) blocked the
+    $88k mock account's rebalance. The mock keeps its whole-account check only."""
+    cfg = TraderConfig(state_dir=tmp_path / "paper", max_order_usd=800)
+    r = Runner(SimBroker(cfg.state_dir / "sim_account.json", starting_cash=100_000), cfg, mode="kiwoom_mock")
+    s = r.run(close=close, now=datetime(2026, 10, 8, tzinfo=timezone.utc))
+    assert not errors(s) and r.broker.positions()
 
 
 def test_default_cap_allows_large_single_position(tmp_path, close):
