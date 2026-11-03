@@ -727,7 +727,10 @@ class Runner:
         live = self.mode in self.LIVE_MODES
         if live and not self.cfg.max_order_usd:
             return "실계좌는 주문 한도(MAX_ORDER_USD)를 .env 에 정해야 주문합니다."
-        limit = self.cfg.max_order_usd or equity
+        # MAX_ORDER_USD is the real-money limit (sized for the app budget); the mock
+        # account keeps its own whole-account check (2026-11-03: an $800 limit
+        # blocked the $88k mock account's rebalance).
+        limit = (self.cfg.max_order_usd if live else None) or equity
         too_big = [o for o in orders if o["value"] > limit]
         if too_big:
             return (f"주문 한도 초과로 차단: {too_big[0]['symbol']} ${too_big[0]['value']:,.0f}"
