@@ -169,7 +169,7 @@ def test_runner_rebalances_only_the_budget(tmp_path):
                          index=idx, columns=DATA_TICKERS)
     inner = SimBroker(tmp_path / "acct.json", starting_cash=50_000.0)
     inner.acct["positions"]["AAPL"] = 100           # the owner's own stock
-    cfg = TraderConfig(state_dir=tmp_path / "live", max_order_usd=5_000)
+    cfg = TraderConfig(state_dir=tmp_path / "live", max_order_usd=5_000, pause_file=tmp_path / "STOP")
     b = BudgetBroker(inner, cfg.state_dir / "budget.json", budget_usd=5_000.0)
     s = Runner(b, cfg, mode="kiwoom_live").run(close=close, now=datetime(2026, 10, 8, 14, tzinfo=timezone.utc))
     spent = 50_000.0 - inner.cash_usd()

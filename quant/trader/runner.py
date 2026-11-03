@@ -26,6 +26,7 @@ import pandas as pd
 
 from quant import market_calendar as mc
 from quant.data import load_prices
+from quant.trader.budget import split_ratio
 from quant.strategies import REGISTRY, _period_ends, momentum_13612, momentum_blend, momentum_rotation, tranched
 
 KST = timezone(timedelta(hours=9))
@@ -105,6 +106,15 @@ class TraderConfig:
     # signal still uses the original's long history, e.g. {"QQQ": "QQQM"}.
     # For small live budgets, where whole shares of a $700 ETF don't fit.
     trade_as: dict[str, str] = field(default_factory=dict)
+    # A second STOP file that also pauses this run. Live and rehearsal records
+    # live in their own folder while Mintory's pause button and Telegram /pause
+    # write paper/STOP, so those runs point here at paper/STOP. Live orders are
+    # refused while it is unset.
+    pause_file: Path | None = None
+    # Before buying, wait for this run's sells to show up in the balance (their
+    # money pays for the buys): up to sell_wait_tries checks sell_wait_s apart.
+    sell_wait_tries: int = 3
+    sell_wait_s: float = 20.0
 
     @property
     def staggered(self) -> bool:
@@ -493,18 +503,24 @@ class Runner:
                      for p in prev.get("positions", [])}
         return positions, prev.get("cash")
 
-    def _reconcile(self, positions: dict[str, dict]) -> None:
+    # A limit order lasts one US session; one still unfilled after this long never will.
+    STALE_HOURS = 20
+
+    def _reconcile(self, positions: dict[str, dict], now: datetime | None = None) -> int:
         """Brokers like Kiwoom only accept an order; the fill shows up later in
         the balance. Settle earlier "pending" trades from current holdings:
         compared with `held_before` (shares held when the order went out), a
         buy is filled once all its shares have arrived (price = the broker's
         average cost), partial while some have; a sell is filled once its
-        shares are gone. Anything else stays pending."""
+        shares are gone. Anything else stays pending until STALE_HOURS have
+        passed: then the order has expired (the price ran past the limit), it is
+        closed with what really filled, and the number of such orders is
+        returned so the run trades toward the target again."""
         p = self.dir / "trades.jsonl"
         if not p.exists():
-            return
+            return 0
         rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]
-        changed = False
+        changed, expired = False, 0
         for r in rows:
             if r.get("status") not in ("pending", "partial"):
                 continue
@@ -512,7 +528,23 @@ class Runner:
             before = r.get("held_before", 0)
             if r["side"] == "buy" and held >= before + r["qty"]:
                 r["status"], r["price"] = "filled", round(positions[r["symbol"]]["avg_price"], 4)
+            elif now is not None and self._stale(r, now):
+                expired += 1
+                got = held - before if r["side"] == "buy" else before - held
+                got = max(0, min(int(r["qty"]), int(got)))
+                if got:  # partly filled: keep what really traded
+                    r["message"] = f"{r['qty']}주 중 {got}주만 체결되고 주문 시간이 끝났어요. 다음 실행에서 나머지를 맞춰요"
+                    r["qty"], r["status"] = got, "filled"
+                    if r["side"] == "buy":
+                        r["price"] = round(positions[r["symbol"]]["avg_price"], 4)
+                else:
+                    r["status"] = "cancelled"
+                    r["message"] = "하루 안에 체결되지 않아 주문이 끝났어요 (가격이 지정가를 넘어감). 다음 실행에서 다시 맞춰요"
+                changed = True
+                continue
             elif r["side"] == "buy" and held > before:
+                if r["status"] == "partial":
+                    continue
                 r["status"] = "partial"
             elif r["side"] == "sell" and held <= before - r["qty"]:
                 r["status"] = "filled"
@@ -525,6 +557,16 @@ class Runner:
             tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
                            encoding="utf-8")
             os.replace(tmp, p)
+        return expired
+
+    def _stale(self, rec: dict, now: datetime) -> bool:
+        try:
+            sent = datetime.fromisoformat(rec["time"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if sent.tzinfo is None:
+            sent = sent.replace(tzinfo=KST)
+        return now - sent > timedelta(hours=self.STALE_HOURS)
 
     def _supersede(self, orders: list[dict]) -> None:
         """Orders still "pending" (no shares arrived yet) for a symbol and side
@@ -604,6 +646,9 @@ class Runner:
         expected = float(seen.get("cash", 0.0))
         for sym in set(before) | set(positions):
             d = positions.get(sym, {}).get("qty", 0) - before.get(sym, 0)
+            if d and split_ratio(before.get(sym, 0), positions.get(sym, {}).get("qty", 0),
+                                 (seen.get("px") or {}).get(sym), prices.get(sym)):
+                continue  # a share split changes the count, not the money
             if d:
                 px = prices.get(sym) or positions.get(sym, {}).get("avg_price") or 0.0
                 expected -= d * px
@@ -714,34 +759,59 @@ class Runner:
         os.replace(tmp, p)
 
     def _prev_equity(self, before: str) -> float | None:
-        """Equity recorded at the last close before `before` (YYYY-MM-DD)."""
+        """Equity recorded at the last close before `before` (YYYY-MM-DD), if that
+        close is recent. After a week with the PC off the last row is old, and a
+        week's fall is not one day's loss."""
         p = self.dir / "equity.jsonl"
         if not p.exists():
             return None
         rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]
         rows = [r for r in rows if r.get("date", "") < before and r.get("equity")]
-        return float(rows[-1]["equity"]) if rows else None
+        if not rows:
+            return None
+        try:
+            gap = (pd.Timestamp(before) - pd.Timestamp(rows[-1]["date"])).days
+        except (TypeError, ValueError):
+            return None
+        return float(rows[-1]["equity"]) if gap <= self.PREV_EQUITY_DAYS else None
 
-    def _guard(self, orders: list[dict], equity: float, last_date: str, flow: float = 0.0) -> str | None:
-        """Why this batch must not go out, or None. Checked before every order run."""
+    PREV_EQUITY_DAYS = 5   # calendar days; covers a weekend plus a holiday
+
+    def _guard(self, orders: list[dict], equity: float, last_date: str,
+               flow: float = 0.0) -> tuple[str | None, list[dict]]:
+        """(why the batch can't all go out, the orders that may still go).
+
+        The limits are there to stop buying on a bug or a crash, never to keep
+        the account from getting out: sells only ever reduce what is held (a
+        broker can't sell shares that aren't there), so they still go when a
+        limit blocks the buys (otherwise the canary's flight to IEF could be
+        skipped on exactly the day the market falls)."""
         live = self.mode in self.LIVE_MODES
+        sells = [o for o in orders if o["side"] == "sell"]
         if live and not self.cfg.max_order_usd:
-            return "실계좌는 주문 한도(MAX_ORDER_USD)를 .env 에 정해야 주문합니다."
+            return "실계좌는 주문 한도(MAX_ORDER_USD)를 .env 에 정해야 주문합니다.", []
+        if live and not getattr(self.broker, "budgeted", False):
+            # Without the app budget the whole account would look like the app's,
+            # the owner's own shares included.
+            return "실계좌는 앱 사용한도(앱 전용 장부)가 있어야 주문합니다. Mintory '실계좌 점검'에서 정해 주세요.", []
+        if live and self.cfg.pause_file is None:
+            return "실계좌 일시정지 파일 위치가 정해지지 않아 주문하지 않았습니다.", []
         # MAX_ORDER_USD is the real-money limit (sized for the app budget); the mock
         # account keeps its own whole-account check (2026-11-03: an $800 limit
         # blocked the $88k mock account's rebalance).
         limit = (self.cfg.max_order_usd if live else None) or equity
-        too_big = [o for o in orders if o["value"] > limit]
+        too_big = [o for o in orders if o["side"] == "buy" and o["value"] > limit]
         if too_big:
-            return (f"주문 한도 초과로 차단: {too_big[0]['symbol']} ${too_big[0]['value']:,.0f}"
-                    f" (한도 ${limit:,.0f})")
+            return (f"주문 한도 초과로 매수를 막았습니다: {too_big[0]['symbol']} ${too_big[0]['value']:,.0f}"
+                    f" (한도 ${limit:,.0f})" + (". 매도는 그대로 냅니다." if sells else ""), sells)
         prev = self._prev_equity(last_date)
         equity -= flow  # a deposit is not a gain, a withdrawal not a loss
         if self.cfg.max_daily_loss and prev and equity / prev - 1 <= -self.cfg.max_daily_loss:
-            return (f"하루 손실 한도 초과로 오늘은 주문하지 않았습니다: 전날 ${prev:,.0f} → 지금 "
+            return (f"하루 손실 한도 초과로 오늘은 매수하지 않았습니다: 전날 ${prev:,.0f} → 지금 "
                     f"${equity:,.0f} ({(equity / prev - 1) * 100:+.1f}%, 한도 "
-                    f"-{self.cfg.max_daily_loss * 100:.0f}%). 내일 다시 확인합니다.")
-        return None
+                    f"-{self.cfg.max_daily_loss * 100:.0f}%)."
+                    + (" 위험을 줄이는 매도는 그대로 냅니다." if sells else "") + " 내일 다시 확인합니다.", sells)
+        return None, orders
 
     @staticmethod
     def _no_reply(res: dict) -> bool:
@@ -783,11 +853,66 @@ class Runner:
                     out.append((o, {"ok": True, "status": "pending", "fill_price": o["ref_price"],
                                     "retried": attempt - 1}))
                     continue
+                placed = self._placed_today(o, now)
+                if placed:
+                    # Kiwoom has the order after all (taken but not filled yet):
+                    # sending it again would buy or sell twice.
+                    out.append((o, {"ok": True, "status": "pending", "order_no": placed,
+                                    "fill_price": o["ref_price"], "retried": attempt - 1}))
+                    continue
+                if placed is None and self.mode in self.LIVE_MODES:
+                    # Can't tell whether the first one went in: never risk a double
+                    # real-money order. The next run plans from the real balance.
+                    still.append((o, res))
+                    continue
                 res = self.broker.place_order(o["symbol"], o["side"], o["qty"], o["ref_price"])
                 res["retried"] = attempt
                 (still if self._no_reply(res) else out).append((o, res))
             unanswered = still
         return out + unanswered
+
+    def _placed_today(self, o: dict, now: datetime) -> str | None:
+        """The number of an order Kiwoom holds for this symbol and side that this
+        app has not recorded yet ("" = none found), or None when the order
+        history can't be read."""
+        try:
+            day = now.astimezone(KST).date()
+            dates = [(day - timedelta(days=1)).strftime("%Y%m%d"), day.strftime("%Y%m%d")]
+            history = self.broker.order_fills(dates) or {}
+        except Exception:  # noqa: BLE001 - unknown, the caller decides
+            return None
+        known = set()
+        p = self.dir / "trades.jsonl"
+        if p.exists():
+            for line in p.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    known.add(str(json.loads(line).get("order_id") or "").strip().lstrip("0"))
+        for no, info in history.items():
+            if no not in known and info.get("symbol") == o["symbol"] and info.get("side") == o["side"] \
+                    and not info.get("cancelled"):
+                return no
+        return ""
+
+    def _wait_for_sells(self, sold: list[tuple[dict, dict]], positions: dict, now: datetime) -> bool:
+        """Wait until the sells just sent show up in the balance, so the money they
+        bring in is there for the buys (an app-budget account counts sale money
+        only once the shares are gone). True once they have."""
+        def done(held: dict) -> bool:
+            return all(held.get(o["symbol"], {}).get("qty", 0) <= positions.get(o["symbol"], {}).get("qty", 0) - o["qty"]
+                       for o, _ in sold)
+        for _ in range(self.cfg.sell_wait_tries):
+            try:
+                if done(self.broker.positions()):
+                    return True
+            except Exception:  # noqa: BLE001 - can't tell; let the buys try
+                return False
+            if not self._market_open(now):
+                return False      # outside the session they won't fill now
+            self.sleep(self.cfg.sell_wait_s)
+        try:
+            return done(self.broker.positions())
+        except Exception:  # noqa: BLE001
+            return False
 
     def _announce(self, orders: list[dict]) -> None:
         if self.mode not in self.LIVE_MODES or not self.notify:
@@ -811,7 +936,7 @@ class Runner:
 
         # Paused: no orders, but the balance and the day's equity row are still
         # recorded so the history has no gaps (a --check run with a red flag).
-        paused = (self.dir / "STOP").exists()
+        paused = (self.dir / "STOP").exists() or bool(self.cfg.pause_file and Path(self.cfg.pause_file).exists())
         if paused:
             alerts.append({"level": "error", "message": "STOP 파일이 있어 매매를 멈췄습니다."})
             execute = False
@@ -908,7 +1033,14 @@ class Runner:
             positions, cash = self._last_holdings()
             return self._state(now, meta, alerts=alerts, positions=positions, cash=cash,
                                prices=prices, targets=targets, scores=scores, sig=sig, canary=canary, parts=parts)
-        self._reconcile(positions)
+        expired = self._reconcile(positions, now)
+        if expired:
+            # The orders the last rebalance counted on never (fully) filled: trade
+            # toward the same target again from the real balance.
+            meta.pop("last_weights", None)
+            meta.pop("last_signal", None)
+            alerts.append({"level": "warn", "message":
+                           f"하루 안에 체결되지 않은 주문 {expired}건이 끝나서, 이번 실행에서 목표 비중대로 다시 맞춥니다."})
         self._settle_fees(meta, cash)
         flow = self._detect_flow(meta, positions, cash, prices)
         if flow:
@@ -948,22 +1080,32 @@ class Runner:
                 orders = buy_only(orders, idle, self.cfg.min_trade_usd)
             today_flow = flow + sum(float(r.get("flow") or 0) for r in self._equity_rows()
                                     if r.get("date") == str(last.date()))
-            blocked = self._guard(orders, equity, str(last.date()), today_flow) if orders else None
+            blocked, allowed = self._guard(orders, equity, str(last.date()), today_flow) if orders else (None, [])
+            live = self.mode in self.LIVE_MODES
             if blocked:
                 alerts.append({"level": "error", "message": blocked})
+            if live and allowed and execute and not paused and not self._market_open(now):
+                # A button press or a late catch-up outside the session would send
+                # limit orders on old prices; the nightly run is inside it.
+                alerts.append({"level": "error", "message":
+                               "미국 정규장이 열려 있을 때만 실계좌 주문을 냅니다. 다음 자동 실행 때 주문해요."})
+                allowed = []
+            if not allowed:
+                pass
             elif paused:
                 pass  # the STOP alert above already says why nothing was ordered
             elif not execute:
-                self.planned = orders
-                for o in orders:
+                self.planned = allowed
+                for o in allowed:
                     alerts.append({"level": "info", "message":
                                    f"점검 모드 - {o['side']} {o['symbol']} {o['qty']}주 예정"})
             else:
                 sleeve_of = {t["symbol"]: t["sleeve"] for t in targets}
                 meta["fee_batch"] = {"time": now.isoformat(timespec="seconds"), "cash_before": cash}
+                all_ok = len(allowed) == len(orders)   # buys held back: rebalance again tomorrow
+                orders = allowed
                 self._announce(orders)
                 self._supersede(orders)
-                all_ok = True
 
                 def record(o: dict, res: dict) -> bool:
                     ok = res.get("ok", False)
@@ -994,7 +1136,13 @@ class Runner:
                 # Kiwoom's rate limit, then the IEF buy failed on cash). Buys then
                 # only spend the cash plus what the accepted sells bring in.
                 money, short = cash - reserve, False
+                sold: list[tuple[dict, dict]] = []   # accepted sells, to wait for before buying
                 for o in orders:
+                    if o["side"] == "buy" and sold:
+                        if not self._wait_for_sells(sold, positions, now):
+                            alerts.append({"level": "warn", "message":
+                                           "매도 체결이 잔고에 아직 안 보여 매수 일부가 안 될 수 있어요. 다음 실행 때 나머지를 맞춰요."})
+                        sold = []
                     if o["side"] == "buy" and short:
                         fit = math.floor(max(money, 0.0) / (o["ref_price"] * 1.02))
                         if fit < o["qty"]:
@@ -1009,6 +1157,8 @@ class Runner:
                     if o["side"] == "sell":
                         if res.get("ok"):
                             money += o["value"]
+                            if res.get("status") == "pending":
+                                sold.append((o, res))
                         else:
                             short = True
                     else:
@@ -1029,7 +1179,7 @@ class Runner:
                 if cash < 0:  # see above; the fills still settle from the share counts
                     cash = before_cash - sum(o["value"] if o["side"] == "buy" else -o["value"]
                                              for o in orders)
-                self._reconcile(positions)
+                self._reconcile(positions, now)
                 self._settle_fees(meta, cash)
 
         equity = cash + sum(p["qty"] * prices.get(s, 0.0) for s, p in positions.items())
@@ -1039,7 +1189,8 @@ class Runner:
                           **({"usdkrw": self.fx} if self.fx else {})}, flow=flow)
         if not self._pending_orders():  # the baseline for spotting the next deposit or withdrawal
             meta["seen"] = {"time": now.isoformat(timespec="seconds"), "cash": round(cash, 2),
-                            "qty": {s: p["qty"] for s, p in positions.items() if p["qty"]}}
+                            "qty": {s: p["qty"] for s, p in positions.items() if p["qty"]},
+                            "px": {s: round(prices[s], 4) for s, p in positions.items() if p["qty"] and prices.get(s)}}
         withdraw = self._withdraw_ready(cash, paused)
         if execute:
             meta["last_run"] = str(today.date())

@@ -168,9 +168,14 @@ def checklist(paper: Path, env: dict, agent: dict | None = None, today: date | N
     if not chk:
         out.append(item("api", "실계좌 연결 확인 (조회만)", "todo",
                         "앱키를 넣은 뒤 '실계좌 키 확인'을 눌러 주세요. 잔고만 조회하고 주문은 내지 않아요"))
+    elif chk.get("ok") and chk.get("quote_fail"):
+        out.append(item("api", "실계좌 연결 확인 (조회만)", "fail",
+                        f"{chk.get('time', '')[:16].replace('T', ' ')} 잔고는 읽었지만 시세 조회가 안 되는 종목이 있어요 "
+                        f"(주문이 거부될 수 있어요): {'; '.join(chk['quote_fail'])[:300]}"))
     elif chk.get("ok"):
         out.append(item("api", "실계좌 연결 확인 (조회만)", "ok",
-                        f"{chk.get('time', '')[:16].replace('T', ' ')} 확인 · 달러 예수금 ${chk.get('cash_usd', 0):,.2f}"))
+                        f"{chk.get('time', '')[:16].replace('T', ' ')} 확인 · 달러 예수금 ${chk.get('cash_usd', 0):,.2f}"
+                        + (f" · 거래 종목 {chk['quotes_checked']}개 시세 확인" if chk.get("quotes_checked") else "")))
     else:
         out.append(item("api", "실계좌 연결 확인 (조회만)", "fail",
                         f"{chk.get('time', '')[:16].replace('T', ' ')} 실패: {chk.get('error', '')}"))
@@ -249,8 +254,27 @@ def check_live_keys(env: dict, paper: Path, broker_cls=None) -> dict:
         try:
             if broker_cls is None:
                 from quant.trader.brokers import KiwoomBroker as broker_cls
-            b = broker_cls(env[LIVE_KEYS[0]], env[LIVE_KEYS[1]], mock=False)
+            try:
+                from scripts.run_trader import EXCHANGES, live_tickers
+            except ImportError:
+                EXCHANGES, live_tickers = {}, lambda: []
+            try:
+                b = broker_cls(env[LIVE_KEYS[0]], env[LIVE_KEYS[1]], mock=False, exchanges=EXCHANGES)
+            except TypeError:  # a broker without exchange codes
+                b = broker_cls(env[LIVE_KEYS[0]], env[LIVE_KEYS[1]], mock=False)
             rec.update(ok=True, cash_usd=round(float(b.cash_usd()), 2))
+            if hasattr(b, "quote"):
+                # Each ticker the app may trade, quoted on the real server with its
+                # exchange code: a wrong code shows up here, not on the first order.
+                bad = []
+                for t in live_tickers():
+                    try:
+                        b.quote(t)
+                    except Exception as e:  # noqa: BLE001 - listed for the user
+                        bad.append(f"{t}: {str(e)[:80]}")
+                rec["quotes_checked"] = len(live_tickers())
+                if bad:
+                    rec["quote_fail"] = bad
         except Exception as e:  # noqa: BLE001 - shown to the user as a failed check
             msg = str(e)
             for k in LIVE_KEYS:  # keys must never be stored or shown

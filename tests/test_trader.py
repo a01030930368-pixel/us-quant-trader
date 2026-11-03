@@ -483,16 +483,57 @@ def test_daily_loss_limit_skips_orders(tmp_path, close):
     assert trades(r)
 
 
+def live_broker(tmp_path, cash=10_000.0, inner=None):
+    from quant.trader.budget import BudgetBroker
+    inner = inner or SimBroker(tmp_path / "real_account.json", starting_cash=cash)
+    return BudgetBroker(inner, tmp_path / "live" / "budget.json", budget_usd=cash)
+
+
+LIVE_OPEN = datetime(2026, 10, 8, 14, 30, tzinfo=timezone.utc)   # 10:30 New York, session open
+
+
 def test_live_mode_needs_order_limit_and_announces(tmp_path, close):
     sent = []
-    cfg = TraderConfig(state_dir=tmp_path / "paper")
-    broker = SimBroker(cfg.state_dir / "sim_account.json", starting_cash=10_000.0)
-    r = Runner(broker, cfg, mode="kiwoom_live", notify=sent.append)
-    state = r.run(close, execute=True, now=datetime(2026, 10, 8, 23, 0, tzinfo=timezone.utc))
+    cfg = TraderConfig(state_dir=tmp_path / "live", pause_file=tmp_path / "STOP")
+    r = Runner(live_broker(tmp_path), cfg, mode="kiwoom_live", notify=sent.append)
+    state = r.run(close, execute=True, now=LIVE_OPEN)
     assert "MAX_ORDER_USD" in errors(state) and not trades(r) and not sent
     r.cfg.max_order_usd = 9_000.0
-    r.run(close, execute=True, now=datetime(2026, 10, 8, 23, 0, tzinfo=timezone.utc))
+    r.run(close, execute=True, now=LIVE_OPEN)
     assert trades(r) and len(sent) == 1 and "실계좌 주문" in sent[0]
+
+
+def test_live_orders_need_the_app_budget(tmp_path, close):
+    """Without the app budget the whole real account (the owner's shares too)
+    would look like the app's: no live orders then."""
+    cfg = TraderConfig(state_dir=tmp_path / "live", max_order_usd=9_000, pause_file=tmp_path / "STOP")
+    inner = SimBroker(tmp_path / "real.json", starting_cash=10_000.0)
+    r = Runner(inner, cfg, mode="kiwoom_live")
+    s = r.run(close, execute=True, now=LIVE_OPEN)
+    assert "앱 사용한도" in errors(s) and inner.positions() == {}
+
+
+def test_live_orders_need_the_shared_pause_file(tmp_path, close):
+    cfg = TraderConfig(state_dir=tmp_path / "live", max_order_usd=9_000)
+    r = Runner(live_broker(tmp_path), cfg, mode="kiwoom_live")
+    s = r.run(close, execute=True, now=LIVE_OPEN)
+    assert "일시정지" in errors(s) and not trades(r)
+
+
+def test_pause_button_stops_a_run_in_another_folder(tmp_path, close):
+    """Mintory's pause and Telegram /pause write paper/STOP; live records are elsewhere."""
+    (tmp_path / "STOP").touch()
+    cfg = TraderConfig(state_dir=tmp_path / "live", max_order_usd=9_000, pause_file=tmp_path / "STOP")
+    r = Runner(live_broker(tmp_path), cfg, mode="kiwoom_live")
+    s = r.run(close, execute=True, now=LIVE_OPEN)
+    assert "STOP" in errors(s) and not trades(r)
+
+
+def test_live_orders_only_while_the_us_session_is_open(tmp_path, close):
+    cfg = TraderConfig(state_dir=tmp_path / "live", max_order_usd=9_000, pause_file=tmp_path / "STOP")
+    r = Runner(live_broker(tmp_path), cfg, mode="kiwoom_live")
+    s = r.run(close, execute=True, now=datetime(2026, 10, 8, 23, 0, tzinfo=timezone.utc))
+    assert "정규장" in errors(s) and not trades(r)
 
 
 def test_mock_mode_never_announces(tmp_path, close):
@@ -798,9 +839,9 @@ def test_read_only_broker_refuses_orders(tmp_path):
 
 def test_rehearsal_records_planned_orders_without_ordering(tmp_path, close):
     from quant.trader.brokers import ReadOnlyBroker
-    cfg = TraderConfig(state_dir=tmp_path / "rehearsal", max_order_usd=50_000)
+    cfg = TraderConfig(state_dir=tmp_path / "rehearsal", max_order_usd=50_000, pause_file=tmp_path / "STOP")
     inner = SimBroker(tmp_path / "a.json", starting_cash=10_000.0)
-    r = Runner(ReadOnlyBroker(inner), cfg, mode="kiwoom_live")
+    r = Runner(live_broker(tmp_path, inner=ReadOnlyBroker(inner)), cfg, mode="kiwoom_live")
     s = r.run(close=close, now=datetime(2026, 10, 8, 14, tzinfo=timezone.utc), execute=False)
     assert s["planned_orders"] and all(o["side"] == "buy" for o in s["planned_orders"])
     assert trades(r) == [] and inner.positions() == {} and inner.cash_usd() == 10_000.0
@@ -840,6 +881,9 @@ def test_run_trader_rehearse_uses_live_keys_read_only(monkeypatch, tmp_path, clo
         run_trader.rehearse(cfg)
     monkeypatch.setenv("KIWOOM_LIVE_APP_KEY", "k")
     monkeypatch.setenv("KIWOOM_LIVE_SECRET_KEY", "s")
+    monkeypatch.delenv("APP_BUDGET_KRW", raising=False)
+    monkeypatch.setenv("APP_BUDGET_USD", "20000")   # live runs only plan inside the app budget
+    monkeypatch.setattr(runner, "load_trade_prices", lambda names, fetch=None: {t: 50.0 for t in names})
     run_trader.rehearse(cfg)
     assert made == [("k", "s", False)]
     state = json.loads((tmp_path / "paper" / "rehearsal" / "state.json").read_text(encoding="utf-8"))
@@ -938,8 +982,8 @@ def test_withdrawal_request_sets_cash_aside_then_finishes(tmp_path, close):
 def test_withdrawal_is_not_a_daily_loss(tmp_path):
     r = make_runner(tmp_path)
     (r.dir / "equity.jsonl").write_text(json.dumps({"date": "2026-10-07", "equity": 10_000}) + "\n")
-    assert "손실 한도" in r._guard([], 7_000, "2026-10-08")
-    assert r._guard([], 7_000, "2026-10-08", flow=-3_000) is None
+    assert "손실 한도" in r._guard([], 7_000, "2026-10-08")[0]
+    assert r._guard([], 7_000, "2026-10-08", flow=-3_000)[0] is None
 
 
 def test_no_flow_while_orders_are_unfilled(tmp_path, close):
