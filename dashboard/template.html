@@ -90,6 +90,7 @@ body {
 .badge.stale { color: var(--up); background: var(--up-bg); }
 .sample-bar { margin: 12px 24px 0; padding: 10px 14px; border-radius: 10px; background: rgba(255, 181, 71, 0.1); color: var(--warn); font-size: 13px; }
 .sample-bar b { color: var(--fg); }
+.ip-bar { margin: 12px 24px 0; padding: 10px 14px; border-radius: 10px; background: rgba(255, 92, 92, 0.12); color: var(--fg); font-size: 13px; border: 1px solid rgba(255, 92, 92, 0.45); }
 /* 로고 옆 시장 지수 (S&P 500 · 나스닥 · VIX) */
 .indices { display: flex; align-items: center; gap: 22px; flex: none; }  /* 줄어들면 내용이 시계 위로 넘침 */
 .ix { display: grid; gap: 1px; }
@@ -742,6 +743,11 @@ tr.tick-down td { animation: tick-down 1.2s ease-out; }
     document.querySelector(".workspace").insertAdjacentHTML("beforebegin", '<div class="sample-bar">아직 내 모의투자 기록이 없어서 <b>예시 숫자</b>를 보여 드리고 있어요. 실제 계좌와 관계없어요.' +
       (DATA.control ? " 오른쪽 위 <b>잔고 새로고침</b>을 누르면 내 계좌 기록으로 바뀌어요." : "") + "</div>");
   }
+  (DATA.ip_block || []).forEach(function (b) {
+    // Kiwoom refuses this PC's IP: a red bar on top until a call succeeds again.
+    document.querySelector(".workspace").insertAdjacentHTML("beforebegin", '<div class="ip-bar">' + esc(b.message) + "</div>");
+    issues.push(b.message);
+  });
   (S.alerts || []).forEach(function (a) {
     if (/^STOP 파일/.test(a.message || "")) return;  // the light turns yellow instead
     if (a.level === "warn" || a.level === "error") issues.push((a.level === "error" ? "오류 · " : "주의 · ") + a.message);

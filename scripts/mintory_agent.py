@@ -831,6 +831,7 @@ def start_bot() -> None:
         paused=lambda: STOP.exists(), set_paused=set_paused, refresh=refresh_now,
         tax=lambda: tax.from_paper(PAPER), withdraw=withdraw_command,
         equity=lambda: read_jsonl(PAPER / "equity.jsonl"),
+        ip=lambda: __import__("quant.ipcheck", fromlist=["blocked"]).blocked(PAPER),
         quotes=lambda syms: live.quotes(live.clean_symbols(",".join(syms))))
     threading.Thread(target=telegram_bot.serve, daemon=True, kwargs={
         "act": act, "get_offset": lambda: read_state().get("tg_offset"),
