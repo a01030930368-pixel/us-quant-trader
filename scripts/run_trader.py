@@ -70,6 +70,12 @@ def main() -> None:
         build_dashboard(cfg.state_dir, open_browser=args.open)
 
 
+def live_tickers() -> list[str]:
+    """Every ticker a small live budget can trade (cheap twins in place of the originals)."""
+    from quant.trader.runner import SAFE, SLEEVES
+    return sorted({CHEAP_TWINS.get(t, t) for s in SLEEVES for t in s.universe} | {SAFE})
+
+
 EXCHANGES = {"SPY": "NY", "IWM": "NY", "EFA": "NY", "GLD": "NY", "IEF": "ND",
              "TLT": "ND", "QQQ": "ND", "TQQQ": "ND", "UPRO": "NY",
              "SPYM": "NY", "QQQM": "ND", "GLDM": "NY", "VTWO": "ND"}
@@ -93,7 +99,9 @@ def rehearse(cfg: TraderConfig) -> None:
         raise SystemExit(".env 에 KIWOOM_LIVE_APP_KEY, KIWOOM_LIVE_SECRET_KEY 가 없어 리허설을 건너뜁니다.")
     broker = ReadOnlyBroker(KiwoomBroker(key, secret, mock=False, exchanges=EXCHANGES))
     base = Path(cfg.state_dir)
-    cfg = replace(cfg, state_dir=base / "rehearsal")
+    # Mintory's pause button and Telegram /pause write paper/STOP; a live run in
+    # its own folder must obey it too (the runner refuses live orders without it).
+    cfg = replace(cfg, state_dir=base / "rehearsal", pause_file=base / "STOP")
     broker = app_budget(broker, Path(cfg.state_dir), settings_dir=base)
     if broker.__class__.__name__ == "BudgetBroker":
         # A small budget splits into ~$45 pieces; the $50 skip rule would drop
@@ -119,7 +127,7 @@ def app_budget(broker, state_dir: Path, env=None, settings_dir: Path | None = No
     from quant.trader.budget import BudgetBroker, budget_setting, read_settings
     from quant.trader.runner import fetch_usdkrw
     env = os.environ if env is None else env
-    settings = read_settings(settings_dir) if settings_dir else {}
+    settings = read_settings(settings_dir, strict=True) if settings_dir else {}
     keep = float(settings.get("keep_usd") or 0.0)
     ledger = state_dir / "budget.json"
     setting = budget_setting(env, settings)

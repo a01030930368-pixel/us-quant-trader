@@ -312,7 +312,9 @@ def serve(act: Actions, get_offset: Callable[[], int | None], set_offset: Callab
                     continue
                 if not msg.get("text"):
                     continue
-                if time.time() - msg.get("date", 0) > MAX_AGE:
+                if time.time() - msg.get("date", 0) > MAX_AGE and command(msg["text"]) != "pause":
+                    # A pause sent while the PC slept still counts: the PC wakes at
+                    # 23:40 and trades at 23:45, so dropping it would trade anyway.
                     stale += 1
                     continue
                 log(f"텔레그램 명령: {msg['text'][:40]}")

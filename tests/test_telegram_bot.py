@@ -89,7 +89,7 @@ def test_serve_only_answers_owner_and_hides_token(monkeypatch):
     now = int(time.time())
     updates = [
         {"update_id": 5, "message": {"chat": {"id": 7}, "date": now, "text": "/pause"}},       # stranger
-        {"update_id": 6, "message": {"chat": {"id": 42}, "date": now - 3600, "text": "/pause"}},  # old
+        {"update_id": 6, "message": {"chat": {"id": 42}, "date": now - 3600, "text": "/help"}},  # old
         {"update_id": 7, "message": {"chat": {"id": 42}, "date": now, "text": "/status"}},
     ]
 
@@ -131,3 +131,15 @@ def test_refresh_failure_shows_the_reason():
                      paused=lambda: False, set_paused=lambda v: None, refresh=lambda: "error (exit 1)")
     text = tb.handle("/refresh", act)
     assert "앱키가 없어요" in text and "exit" not in text
+
+
+def test_a_pause_sent_while_the_pc_slept_still_pauses(monkeypatch):
+    """The PC wakes at 23:40 and trades at 23:45: an old /pause must still count."""
+    monkeypatch.setattr(notify, "settings", lambda: {"token": "123:SECRET", "chat_id": "42", "daily": True})
+    sent = []
+    updates = [{"update_id": 9, "message": {"chat": {"id": 42}, "date": int(time.time()) - 3 * 3600, "text": "/pause"}}]
+    monkeypatch.setattr(tb, "_api", lambda token, method, **p: {"result": updates} if method == "getUpdates" else {"ok": True})
+    monkeypatch.setattr(notify, "send", lambda text: sent.append(text) or True)
+    act, box = actions()
+    tb.serve(act, lambda: None, lambda n: None, once=True)
+    assert box["paused"] and "일시정지" in sent[0] and not any("건너뛰었어요" in t for t in sent)

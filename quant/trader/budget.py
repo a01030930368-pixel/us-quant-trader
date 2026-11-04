@@ -47,7 +47,31 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+SPLIT_RATIOS = (2, 3, 4, 5, 8, 10, 15, 20, 25)
+
+
+def split_ratio(old_qty, new_qty, old_px, new_px, tol: float = 0.15) -> float | None:
+    """new/old share ratio when the change looks like a share split or reverse
+    split: the count moved by an exact common ratio and the price the other way
+    by about the same factor. None for anything else (a trade, no prices)."""
+    try:
+        old_qty, new_qty = int(old_qty), int(new_qty)
+        old_px, new_px = float(old_px or 0), float(new_px or 0)
+    except (TypeError, ValueError):
+        return None
+    if old_qty <= 0 or new_qty <= 0 or old_qty == new_qty or old_px <= 0 or new_px <= 0:
+        return None
+    for k in SPLIT_RATIOS:
+        for r in (k, 1 / k):
+            if abs(old_qty * r - new_qty) < 1e-9 or (r < 1 and new_qty == int(old_qty * r)):
+                if abs(new_px * r / old_px - 1) <= tol:
+                    return r
+    return None
+
+
 class BudgetBroker:
+    budgeted = True   # the runner refuses live orders through anything else
+
     def __init__(self, inner, ledger_path: Path, budget_usd: float | None = None, now=_now,
                  setting: tuple[str, float] | None = None, usdkrw=None, keep_usd: float = 0.0):
         """budget_usd: a fixed starting budget. setting: (".env key", value) as read
@@ -156,6 +180,9 @@ class BudgetBroker:
                 outside[sym] = max(0, held - app)
                 changed = True
                 continue
+            if self._split(sym, actual, pend):
+                app = int((mine.get(sym) or {}).get("qty", 0))
+                changed = True
             move = held - app - int(outside[sym]) - known.get(sym, 0)
             for o in (o for o in pend if o["symbol"] == sym and o["qty"] > 0 and not o["exact"]):
                 want = move if o["side"] == "buy" else -move
@@ -180,10 +207,49 @@ class BudgetBroker:
         for sym in [k for k, v in outside.items() if not v and k not in actual and k not in mine and k not in waiting]:
             outside.pop(sym)
         changed |= self._dividends(actual)
+        seen = {s: round(float(p.get("avg_price") or 0), 4) for s, p in actual.items() if p.get("avg_price")}
+        if seen != self.led.get("avg_seen"):
+            self.led["avg_seen"] = seen
+            changed = True
         if changed:
             self._save()
         self._actual = actual
         return actual
+
+    def _split(self, sym: str, actual: dict, pend: list) -> bool:
+        """A share split (or reverse split) multiplies every holder's shares and
+        divides the account's average cost by the same factor. Scale the app's
+        and the owner's counts instead of reading the new shares as the owner's
+        trade (TQQQ and UPRO both split 2:1 in Jan 2022)."""
+        if any(o["symbol"] == sym and o["qty"] > 0 for o in pend):
+            return False
+        mine = self.led["positions"].get(sym)
+        outside = self.led["outside"]
+        before = int((mine or {}).get("qty", 0)) + int(outside.get(sym, 0))
+        now = actual.get(sym) or {}
+        r = split_ratio(before, now.get("qty", 0), (self.led.get("avg_seen") or {}).get(sym), now.get("avg_price"),
+                        tol=0.02)
+        if not r:
+            return False
+        if mine:
+            mine["qty"] = int(round(mine["qty"] * r))
+            mine["avg_price"] = round(mine["avg_price"] / r, 4)
+            if not mine["qty"]:
+                self.led["positions"].pop(sym)
+        outside[sym] = int(round(int(outside.get(sym, 0)) * r))
+        self.led.setdefault("splits", []).append(
+            {"time": self.now().isoformat(timespec="seconds"), "symbol": sym, "ratio": r})
+        self.changed = f"{sym} 주식 분할({r:g}배)을 장부에 반영했어요"
+        return True
+
+    def order_fills(self, dates: list[str]) -> dict:
+        """The account's order history, so the runner can check for an order
+        before sending it again (raises when the broker can't tell)."""
+        return self.inner.order_fills(dates)
+
+    def _reserved(self) -> float:
+        """Dollars held for app buys sent but not filled yet."""
+        return sum(float(o["qty"]) * float(o["price"]) for o in self.led.get("pending") or [] if o["side"] == "buy")
 
     def _dividends(self, actual: dict) -> bool:
         """Once a day: add the app's share of ETF dividends (after tax) to its
@@ -284,7 +350,9 @@ class BudgetBroker:
                 return {"ok": False, "msg": f"앱이 산 {ticker} 는 {mine}주뿐이라 {qty}주를 팔 수 없어요 (내 다른 주식은 안 건드려요)"}
         base_cash = self.inner.cash_usd()
         if side == "buy":
-            need, free = qty * ref_price, self._available(base_cash)
+            # Buys still waiting count as spent, so a resent or second buy can't
+            # use the same dollars (the owner's own dollars stay out of reach).
+            need, free = qty * ref_price, max(0.0, self._available(base_cash) - self._reserved())
             if need > free * 1.02:
                 why = (f"내 달러 보호 ${self.keep_usd:,.2f}를 빼면 앱이 쓸 수 있는 돈이 ${free:,.2f}뿐이라"
                        if free < float(self.led["cash"]) else f"앱 사용한도 안의 현금 ${self.led['cash']:,.2f}로는")
@@ -322,10 +390,17 @@ class BudgetBroker:
 SETTINGS = "app_budget.json"   # set from Mintory; wins over .env
 
 
-def read_settings(folder: Path) -> dict:
+def read_settings(folder: Path, strict: bool = False) -> dict:
+    """The budget set in Mintory, {} when none. strict: a file that exists but
+    can't be read raises instead of silently falling back to .env (for trading)."""
+    path = Path(folder) / SETTINGS
     try:
-        return json.loads((Path(folder) / SETTINGS).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        if strict:
+            raise RuntimeError(f"Mintory 앱 사용한도 파일({path.name})을 읽지 못했어요. Mintory에서 다시 저장해 주세요") from e
         return {}
 
 
