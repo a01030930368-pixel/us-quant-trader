@@ -53,7 +53,7 @@ def main() -> None:
     if args.mode == "sim":
         broker = SimBroker(cfg.state_dir / "sim_account.json", starting_cash=args.sim_cash)
     else:
-        broker = KiwoomBroker.from_env(mock=True, exchanges=EXCHANGES)
+        broker = KiwoomBroker.from_env(mock=True, exchanges=EXCHANGES, status_dir=cfg.state_dir)
 
     mode = "simulate" if args.mode == "sim" else "kiwoom_mock"
     from quant import notify
@@ -97,8 +97,8 @@ def rehearse(cfg: TraderConfig) -> None:
     key, secret = os.getenv("KIWOOM_LIVE_APP_KEY"), os.getenv("KIWOOM_LIVE_SECRET_KEY")
     if not key or not secret:
         raise SystemExit(".env 에 KIWOOM_LIVE_APP_KEY, KIWOOM_LIVE_SECRET_KEY 가 없어 리허설을 건너뜁니다.")
-    broker = ReadOnlyBroker(KiwoomBroker(key, secret, mock=False, exchanges=EXCHANGES))
     base = Path(cfg.state_dir)
+    broker = ReadOnlyBroker(KiwoomBroker(key, secret, mock=False, exchanges=EXCHANGES, status_dir=base))
     # Mintory's pause button and Telegram /pause write paper/STOP; a live run in
     # its own folder must obey it too (the runner refuses live orders without it).
     cfg = replace(cfg, state_dir=base / "rehearsal", pause_file=base / "STOP")

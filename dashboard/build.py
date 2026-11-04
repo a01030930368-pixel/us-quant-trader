@@ -85,6 +85,14 @@ def load(data_dir: Path) -> dict:
             data["agent"] = json.loads(agent_path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             print(f"[경고] {agent_path.name} 을 읽지 못해 자동 실행 상태는 건너뜁니다.", file=sys.stderr)
+    # Kiwoom refusing this PC's IP (quant.ipcheck): a bar at the top of the screen.
+    try:
+        from quant import ipcheck
+        blocked = ipcheck.blocked(data_dir)
+        if blocked:
+            data["ip_block"] = [{"server": k, "message": ipcheck.message(v, k)} for k, v in blocked.items()]
+    except Exception:  # noqa: BLE001 - only a notice
+        pass
     return data
 
 
