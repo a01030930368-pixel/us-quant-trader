@@ -864,7 +864,7 @@ def test_run_trader_rehearse_uses_live_keys_read_only(monkeypatch, tmp_path, clo
     made = []
 
     class FakeKiwoom(SimBroker):
-        def __init__(self, key, secret, mock=True, exchanges=None):
+        def __init__(self, key, secret, mock=True, exchanges=None, **kw):
             made.append((key, secret, mock))
             super().__init__(tmp_path / "live.json", starting_cash=20_000.0)
 

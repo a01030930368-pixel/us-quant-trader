@@ -259,7 +259,8 @@ def check_live_keys(env: dict, paper: Path, broker_cls=None) -> dict:
             except ImportError:
                 EXCHANGES, live_tickers = {}, lambda: []
             try:
-                b = broker_cls(env[LIVE_KEYS[0]], env[LIVE_KEYS[1]], mock=False, exchanges=EXCHANGES)
+                b = broker_cls(env[LIVE_KEYS[0]], env[LIVE_KEYS[1]], mock=False, exchanges=EXCHANGES,
+                               status_dir=paper)
             except TypeError:  # a broker without exchange codes
                 b = broker_cls(env[LIVE_KEYS[0]], env[LIVE_KEYS[1]], mock=False)
             rec.update(ok=True, cash_usd=round(float(b.cash_usd()), 2))

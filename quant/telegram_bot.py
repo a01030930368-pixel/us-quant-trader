@@ -59,6 +59,7 @@ class Actions:
     tax: Callable[[], dict | None] | None = None
     equity: Callable[[], list[dict]] | None = None   # paper/equity.jsonl rows
     withdraw: Callable[[str], str] | None = None     # "/withdraw <arg>" -> reply text
+    ip: Callable[[], dict] | None = None              # quant.ipcheck.blocked(paper)
 
 
 def command(text: str) -> str | None:
@@ -174,7 +175,7 @@ def balance_text(state: dict, quotes: dict | None = None, paused: bool = False,
     return "\n\n".join(blocks)
 
 
-def status_text(state: dict, agent: dict, paused: bool) -> str:
+def status_text(state: dict, agent: dict, paused: bool, ip: dict | None = None) -> str:
     lines = ["⏸ 일시정지 중 · 자동 매매가 주문을 내지 않아요\n    /resume 으로 재개"
              if paused else "▶️ 자동 매매 켜짐"]
     if agent.get("next_run"):
@@ -191,6 +192,9 @@ def status_text(state: dict, agent: dict, paused: bool) -> str:
     blocks = ["📋 Mintory 상태", "\n".join(lines)]
     if agent.get("missed"):
         blocks.append("⚠️ 놓친 실행 · " + ", ".join(notify._md(d) for d in agent["missed"]))
+    from quant import ipcheck
+    for server, rec in (ip or {}).items():
+        blocks.append("🚫 IP 미등록 · " + ipcheck.message(rec, server))
     return "\n\n".join(blocks)
 
 
@@ -260,7 +264,7 @@ def handle(text: str, act: Actions) -> str:
         parts = (text or "").strip().split(maxsplit=1)
         return act.withdraw(parts[1] if len(parts) > 1 else "")
     if cmd == "status":
-        return status_text(act.state(), act.agent(), act.paused())
+        return status_text(act.state(), act.agent(), act.paused(), act.ip() if act.ip else None)
     if cmd == "pause":
         if act.paused():
             return "⏸ 이미 일시정지 중이에요.\n\n다시 하려면 /resume"

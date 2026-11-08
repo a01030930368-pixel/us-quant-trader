@@ -93,8 +93,11 @@ class KiwoomBroker:
     EXCHANGES = {"NASDAQ": "ND", "NYSE": "NY", "AMEX": "NA"}
 
     def __init__(self, appkey: str, secret: str, mock: bool = True,
-                 exchanges: dict[str, str] | None = None):
+                 exchanges: dict[str, str] | None = None, status_dir: Path | None = None):
         self.base = self.MOCK if mock else self.REAL
+        # Where to note whether Kiwoom accepts this PC's IP (quant.ipcheck).
+        self.status_dir = Path(status_dir) if status_dir else None
+        self._ip_seen: bool | None = None
         self.appkey, self.secret = appkey, secret
         self.exchanges = exchanges or {}
         self._token: str | None = None
@@ -109,6 +112,17 @@ class KiwoomBroker:
         return cls(appkey, secret, mock=mock, **kw)
 
     # -- plumbing ---------------------------------------------------------
+    def _note_ip(self, ok: bool, code: str = "") -> None:
+        """Record once per state change whether Kiwoom accepted this PC's IP."""
+        if self.status_dir is None or self._ip_seen is ok:
+            return
+        self._ip_seen = ok
+        try:
+            from quant import ipcheck
+            ipcheck.record(self.status_dir, "mock" if self.base == self.MOCK else "real", not ok, code)
+        except Exception:  # noqa: BLE001 - a status note must never stop trading
+            pass
+
     def token(self) -> str:
         if self._token and time.time() < self._token_exp - 60:
             return self._token
@@ -119,7 +133,13 @@ class KiwoomBroker:
                           timeout=15)
         body = r.json()
         if not body.get("token"):
+            code = str(body.get("return_code", "")).strip()
+            msg = str(body.get("return_msg", ""))
+            ip_code = next((c for c in ("8010", "8040", "8050", "8103") if c == code or c in msg), "")
+            if ip_code:
+                self._note_ip(False, ip_code)
             raise RuntimeError(f"토큰 발급 실패: {body}")
+        self._note_ip(True)
         self._token = body["token"]
         self._token_exp = _parse_expiry(body.get("expires_dt"))
         return self._token
@@ -151,7 +171,10 @@ class KiwoomBroker:
                 raise RuntimeError(f"{api_id} 응답 없음 (키움 서버): {e}") from e
             data = r.json() if r.content else {}
             if r.ok and str(data.get("return_code", "0")) == "0":
+                self._note_ip(True)
                 return data
+            if str(data.get("return_code", "")).strip() in ("8010", "8040", "8050", "8103"):
+                self._note_ip(False, str(data.get("return_code")).strip())
             msg = str(data.get("return_msg", ""))
             hint = ERROR_HINTS.get(str(data.get("return_code", "")).strip())
             # 429 / "초과": rate limit. "지연"/"재시도" (e.g. RC9002, mock server
