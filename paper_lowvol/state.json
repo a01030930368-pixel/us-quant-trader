@@ -1,12 +1,12 @@
 {
  "schema_version": 1,
  "name": "저변동성 업종 (업종 ETF 3개)",
- "updated_at": "2026-11-09T23:21:05+00:00",
+ "updated_at": "2026-11-11T02:14:47+00:00",
  "base_date": "2026-10-09",
  "base_equity": 100000.0,
- "last_date": "2026-11-09",
- "equity": 106984.22,
- "return": 0.069842,
+ "last_date": "2026-11-10",
+ "equity": 107154.1,
+ "return": 0.071541,
  "max_drawdown": -0.021866,
  "cost_bps": 25.0,
  "mix_share": 0.3,
@@ -16,7 +16,7 @@
    "ticker": "XLF",
    "name": "금융",
    "weight": 0.3333,
-   "vol": 0.1493
+   "vol": 0.1491
   },
   {
    "ticker": "XLI",
@@ -28,7 +28,7 @@
    "ticker": "XLP",
    "name": "필수소비재",
    "weight": 0.25,
-   "vol": 0.1759
+   "vol": 0.175
   },
   {
    "ticker": "XLU",
