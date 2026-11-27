@@ -1,7 +1,7 @@
 {
  "schema_version": 1,
  "name": "저변동성 업종 (업종 ETF 3개)",
- "updated_at": "2026-11-26T04:22:25+00:00",
+ "updated_at": "2026-11-27T04:31:12+00:00",
  "base_date": "2026-10-09",
  "base_equity": 100000.0,
  "last_date": "2026-11-25",
